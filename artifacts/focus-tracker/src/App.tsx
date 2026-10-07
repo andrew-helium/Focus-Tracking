@@ -10,6 +10,7 @@ type Settings = { showUpcoming:boolean; upcomingLimit:number; showRecent:boolean
 type Store = { categories:Category[]; tasks:Task[]; sessions:Session[]; settings:Settings };
 const colors = ['#327a66','#d78b53','#617bca','#ca5f92','#4ba9a3','#d2a83e','#8d70c9','#63727e'];
 const defaults:Store = { categories:[{id:'cat-reading',name:'Reading',color:'#ca5f92'},{id:'cat-learning',name:'Learning',color:'#2cb08e'},{id:'cat-project',name:'Project',color:'#8b61d9'},{id:'cat-planning',name:'Planning',color:'#d6a51f'},{id:'cat-research',name:'Research',color:'#2ba99d'},{id:'cat-writing',name:'Writing',color:'#26a5ce'}],tasks:[],sessions:[],settings:{showUpcoming:true,upcomingLimit:5,showRecent:true,recentLimit:5} };
+const compareCategories=(a:Category,b:Category)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'});
 const readStore=():Store=>{try{const raw=localStorage.getItem('focus-tracker-v1');if(raw){const parsed=JSON.parse(raw);return {...defaults,...parsed,settings:{...defaults.settings,...parsed.settings}}}}catch{}return defaults};
 const uid=()=>`${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
 const dateLabel=(d:string)=>d?new Date(`${d}T12:00:00`).toLocaleDateString(undefined,{month:'short',day:'numeric'}):'No date';
@@ -18,7 +19,8 @@ const clockLabel=(s:number)=>`${String(Math.floor(s/3600)).padStart(2,'0')}:${St
 const today=()=>new Date().toISOString().slice(0,10);
 
 function App(){
-  const [store,setStore]=useState<Store>(readStore);
+  const [store,setStoreState]=useState<Store>(()=>{const initial=readStore();return {...initial,categories:[...initial.categories].sort(compareCategories)}});
+  const setStore=(next:Store|((current:Store)=>Store))=>{setStoreState(current=>{const updated=typeof next==='function'?next(current):next;return {...updated,categories:[...updated.categories].sort(compareCategories)}})};
   useEffect(()=>{localStorage.setItem('focus-tracker-v1',JSON.stringify(store))},[store]);
   const [path,setPath]=useLocation();
   const [mode,setMode]=useState<'stopwatch'|'timer'>('stopwatch');
