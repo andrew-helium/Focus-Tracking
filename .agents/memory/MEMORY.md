@@ -1,0 +1,1 @@
+- [Category-first task selection](category-first-task-selection.md) — Track task choices should stay scoped to the selected category and appear inline, not in a global dropdown.
