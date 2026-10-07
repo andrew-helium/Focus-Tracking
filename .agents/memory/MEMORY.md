@@ -1,1 +1,2 @@
 - [Category-first task selection](category-first-task-selection.md) — Track task choices should stay scoped to the selected category and appear inline, not in a global dropdown.
+- [Recurring task behavior](recurring-task-behavior.md) — Repeat schedules use selected weekdays or month dates and re-activate completed tasks on their next scheduled date.
