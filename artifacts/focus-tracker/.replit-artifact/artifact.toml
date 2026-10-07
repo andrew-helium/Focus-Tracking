@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Focus Tracker"
+description = "A personal time-tracking workspace for planning projects and assignments, recording stopwatch or countdown sessions, and reviewing focused work."
+version = "1.0.0"
+id = "artifacts/focus-tracker"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 19264
+
+[services.development]
+run = "pnpm --filter @workspace/focus-tracker run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/focus-tracker", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/focus-tracker/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19264"
+BASE_PATH = "/"
