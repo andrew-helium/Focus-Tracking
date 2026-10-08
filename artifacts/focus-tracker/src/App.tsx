@@ -29,6 +29,8 @@ function App(){
   const [running,setRunning]=useState(false);
   const [elapsed,setElapsed]=useState(0);
   const runBase=useRef(0);
+  const audioContext=useRef<AudioContext|null>(null);
+  const completionChimed=useRef(false);
   const [startedAt,setStartedAt]=useState('');
   const [runStarted,setRunStarted]=useState(0);
   const [pickCategory,setPickCategory]=useState('');
@@ -54,7 +56,10 @@ function App(){
   useEffect(()=>{if(JSON.stringify(settings)!==JSON.stringify(store.settings))setStore(s=>({...s,settings}))},[settings]);
   const [dayTick,setDayTick]=useState(0);
   useEffect(()=>{const now=new Date();const midnight=new Date(now);midnight.setHours(24,0,0,0);const timeout=window.setTimeout(()=>setDayTick(t=>t+1),midnight.getTime()-now.getTime()+25);return()=>window.clearTimeout(timeout)},[dayTick]);
-  useEffect(()=>{if(!running)return;const tick=()=>{const next=runBase.current+Math.floor((Date.now()-runStarted)/1000);setElapsed(mode==='timer'?Math.min(next,duration*60):next);if(mode==='timer'&&next>=duration*60){setRunning(false);setElapsed(duration*60);setSessionNote('');setModal('save')}};tick();const t=setInterval(tick,250);return()=>clearInterval(t)},[running,runStarted,mode,duration]);
+  useEffect(()=>()=>{if(audioContext.current)void audioContext.current.close()},[]);
+  const prepareCompletionSound=()=>{if(typeof window==='undefined'||!window.AudioContext)return;audioContext.current??=new AudioContext();if(audioContext.current.state==='suspended')void audioContext.current.resume().catch(()=>{})};
+  const playCompletionBell=()=>{const context=audioContext.current;if(!context)return;const ring=()=>{const start=context.currentTime;const master=context.createGain();master.gain.setValueAtTime(.0001,start);master.gain.exponentialRampToValueAtTime(.18,start+.015);master.gain.exponentialRampToValueAtTime(.0001,start+1.45);master.connect(context.destination);for(const [frequency,level] of [[880,1],[1320,.55],[1760,.25]]){const oscillator=context.createOscillator();const partial=context.createGain();oscillator.type='sine';oscillator.frequency.setValueAtTime(frequency,start);partial.gain.setValueAtTime(level,start);oscillator.connect(partial);partial.connect(master);oscillator.start(start);oscillator.stop(start+1.5)}};if(context.state==='running')ring();else if(context.state==='suspended')void context.resume().then(ring).catch(()=>{})};
+  useEffect(()=>{if(!running)return;const tick=()=>{const next=runBase.current+Math.floor((Date.now()-runStarted)/1000);setElapsed(mode==='timer'?Math.min(next,duration*60):next);if(mode==='timer'&&next>=duration*60){setRunning(false);setElapsed(duration*60);setSessionNote('');setModal('save');if(!completionChimed.current){completionChimed.current=true;playCompletionBell()}}};tick();const t=setInterval(tick,250);return()=>clearInterval(t)},[running,runStarted,mode,duration]);
   function blankTask():Task{const startDate=today();return {id:'',title:'',description:'',categoryId:'',engagement:'deep',length:'short',startDate,endDate:'',recurring:false,recurrence:'weekly',weeklyDays:[weekdayIndex(startDate)],monthlyDays:[Number(startDate.slice(-2))],lastCompletedDate:undefined,completed:false,createdAt:new Date().toISOString()}}
   const category=(id:string)=>store.categories.find(c=>c.id===id);
   const saveTask=(e:FormEvent)=>{e.preventDefault();if(!taskForm.title.trim()||(taskForm.recurring&&taskForm.recurrence==='weekly'&&!taskForm.weeklyDays.length)||(taskForm.recurring&&taskForm.recurrence==='monthly'&&!taskForm.monthlyDays.length)||(taskForm.endDate&&taskForm.startDate&&taskForm.endDate<taskForm.startDate))return;const item={...taskForm,title:taskForm.title.trim(),completed:taskForm.recurring?false:taskForm.completed,id:taskForm.id||uid()};setStore(s=>({...s,tasks:taskForm.id?s.tasks.map(t=>t.id===item.id?item:t):[item,...s.tasks]}));setModal('');setTasksOpen(false);setEditingTask(null);setTaskForm(blankTask())};
@@ -64,7 +69,7 @@ function App(){
   const toggleTask=(id:string)=>setStore(s=>({...s,tasks:s.tasks.map(t=>{if(t.id!==id)return t;if(!t.recurring)return {...t,completed:!t.completed};return taskIsChecked(t)?{...t,completed:false,lastCompletedDate:undefined}:{...t,completed:false,lastCompletedDate:today()}})}));
   const toggleWeekday=(day:number)=>setTaskForm(t=>({...t,weeklyDays:t.weeklyDays.includes(day)?t.weeklyDays.filter(value=>value!==day):[...t.weeklyDays,day].sort((a,b)=>a-b)}));
   const toggleMonthDay=(day:number)=>setTaskForm(t=>({...t,monthlyDays:t.monthlyDays.includes(day)?t.monthlyDays.filter(value=>value!==day):[...t.monthlyDays,day].sort((a,b)=>a-b)}));
-  const startTimer=()=>{if(!pickCategory)return;if(!startedAt)setStartedAt(new Date().toISOString());runBase.current=elapsed;setRunStarted(Date.now());setRunning(true)};
+  const startTimer=()=>{if(!pickCategory)return;if(mode==='timer'){completionChimed.current=false;prepareCompletionSound()}if(!startedAt)setStartedAt(new Date().toISOString());runBase.current=elapsed;setRunStarted(Date.now());setRunning(true)};
   const pauseTimer=()=>{if(running){setElapsed(runBase.current+Math.floor((Date.now()-runStarted)/1000));setRunning(false)}};
   const resetTimer=()=>{setRunning(false);setElapsed(0);setStartedAt('');setModal('');setSessionNote('')};
   const saveSession=()=>{const sec=Math.floor(elapsed);if(sec<1){resetTimer();return}const chosen=store.tasks.find(t=>t.id===pickTask);const sess:Session={id:uid(),categoryId:pickCategory||chosen?.categoryId||'',taskId:pickTask,taskTitle:chosen?.title||'',mode,startedAt:startedAt||new Date(Date.now()-sec*1000).toISOString(),endedAt:new Date().toISOString(),durationSeconds:sec,note:sessionNote.trim()};setStore(s=>({...s,sessions:[sess,...s.sessions]}));resetTimer()};
