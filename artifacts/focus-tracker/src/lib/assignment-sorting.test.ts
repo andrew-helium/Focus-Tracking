@@ -13,12 +13,6 @@ const assignment = (id: string, overrides: Partial<Assignment> = {}): Assignment
   ...overrides,
 });
 
-const categoryName = (id: string) => ({
-  learning: 'Learning',
-  reading: 'Reading',
-  writing: 'Writing',
-}[id]);
-
 test('sorts by earliest start date and keeps missing dates last', () => {
   const tasks = [
     assignment('later', { startDate: '2026-10-10' }),
@@ -28,7 +22,7 @@ test('sorts by earliest start date and keeps missing dates last', () => {
   ];
 
   assert.deepEqual(
-    sortAssignments(tasks, 'start', categoryName).map(task => task.id),
+    sortAssignments(tasks, 'start').map(task => task.id),
     ['early', 'same-date', 'later', 'undated'],
   );
 });
@@ -41,21 +35,7 @@ test('sorts by earliest end date and places ongoing assignments last', () => {
   ];
 
   assert.deepEqual(
-    sortAssignments(tasks, 'end', categoryName).map(task => task.id),
+    sortAssignments(tasks, 'end').map(task => task.id),
     ['sooner', 'later', 'ongoing'],
-  );
-});
-
-test('sorts by category A–Z and places uncategorized assignments last', () => {
-  const tasks = [
-    assignment('writing', { categoryId: 'writing' }),
-    assignment('reading', { categoryId: 'reading' }),
-    assignment('learning', { categoryId: 'learning' }),
-    assignment('uncategorized'),
-  ];
-
-  assert.deepEqual(
-    sortAssignments(tasks, 'category', categoryName).map(task => task.id),
-    ['learning', 'reading', 'writing', 'uncategorized'],
   );
 });
