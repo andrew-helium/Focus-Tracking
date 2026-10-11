@@ -43,8 +43,7 @@ function DefaultFallback({ error, resetError }: ErrorFallbackProps) {
           Something went wrong
         </h1>
         <p className="mt-2 text-sm text-gray-600">
-          This part of the app hit an error. The rest of the app is still
-          running.
+          This part of the app hit an error, and the rest of the app is still running
         </p>
         {/* Dev only: messages can carry API responses and other internals. */}
         {import.meta.env.DEV ? (
