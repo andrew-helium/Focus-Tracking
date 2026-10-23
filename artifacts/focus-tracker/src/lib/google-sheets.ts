@@ -87,6 +87,32 @@ function boolCell(value: boolean): string {
   return value ? 'TRUE' : 'FALSE';
 }
 
+const RECORD_LABEL: Record<(typeof TABS)[number], string> = {
+  Categories: 'Category',
+  Tasks: 'Task',
+  Sessions: 'Session',
+};
+
+/** One table covering categories, tasks, and sessions. Empty cells are fields that record type does not use. */
+export function storeToBackupCsvRows(store: SyncStore): string[][] {
+  const tables = storeToRows(store);
+  const columns = ['record'];
+  for (const name of TABS) {
+    for (const column of tables[name][0] ?? []) {
+      if (!columns.includes(column)) columns.push(column);
+    }
+  }
+  const rows: string[][] = [columns];
+  for (const name of TABS) {
+    const [header = [], ...body] = tables[name];
+    const index = new Map(header.map((column, position) => [column, position]));
+    for (const source of body) {
+      rows.push(columns.map((column) => (column === 'record' ? RECORD_LABEL[name] : source[index.get(column) ?? -1] ?? '')));
+    }
+  }
+  return rows;
+}
+
 export function storeToRows(store: SyncStore): Record<(typeof TABS)[number], string[][]> {
   const categoryName = (id: string) => store.categories.find((c) => c.id === id)?.name ?? '';
   return {
