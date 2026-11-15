@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { ChevronDown, ChevronUp } from 'lucide-react';
 import {
   addDays,
   bucketUnit,
   buildChartData,
+  clampChartWindow,
+  clampViewCategories,
   formatDurationShort,
+  moveCategory,
+  orderCategories,
   maxBarsForSpan,
   resolveDefaultBars,
   resolveRange,
@@ -18,12 +21,9 @@ import {
   yAxisScale,
   Y_INTERVALS,
   PRESET_LABELS,
-  syncCategoryViews,
-  changeCategoryViews,
-  moveCategoryInViews,
-  categoryDropIndex,
   segmentsInStackOrder,
   type ChartBucket,
+  type ChartData,
   type ChartCategory,
   type ChartPreset,
   type ChartSession,
@@ -40,9 +40,9 @@ type ChartPrefs = {
   yInterval: number | null;
   xInterval: string | null;
   viewCount: number;
-  viewStacks: string[][];
-  viewsArranged: boolean;
-  showStacks: boolean;
+  viewWindows: { start: string; end: string }[];
+  viewCategories: (string[] | null)[];
+  viewCategoryOrders: string[][];
   chartHeight: number | null;
   axisFontSize: number | null;
 };
@@ -75,7 +75,27 @@ function defaultCustomRange(): { customStart: string; customEnd: string } {
   return { customStart: toDayKey(addDays(end, -29)), customEnd: toDayKey(end) };
 }
 
-function readStacks(value: unknown): string[][] {
+function readWindows(value: unknown): { start: string; end: string }[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const start = (item as { start?: unknown }).start;
+    const end = (item as { end?: unknown }).end;
+    if (typeof start !== 'string' || typeof end !== 'string') return [];
+    return [{ start, end }];
+  });
+}
+
+function readViewCategories(value: unknown): (string[] | null)[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    if (item === null) return null;
+    if (!Array.isArray(item)) return null;
+    return item.filter((id): id is string => typeof id === 'string');
+  });
+}
+
+function readCategoryOrders(value: unknown): string[][] {
   if (!Array.isArray(value)) return [];
   return value.filter(Array.isArray).map((column) => column.filter((id): id is string => typeof id === 'string'));
 }
@@ -88,9 +108,9 @@ function readPrefs(): ChartPrefs {
     yInterval: null,
     xInterval: null,
     viewCount: 1,
-    viewStacks: [],
-    viewsArranged: false,
-    showStacks: true,
+    viewWindows: [],
+    viewCategories: [],
+    viewCategoryOrders: [],
     chartHeight: null,
     axisFontSize: null,
   };
@@ -119,9 +139,9 @@ function readPrefs(): ChartPrefs {
       yInterval: knownYInterval(parsed.yInterval),
       xInterval: knownXInterval(parsed.xInterval),
       viewCount,
-      viewStacks: readStacks(parsed.viewStacks),
-      viewsArranged: parsed.viewsArranged === true,
-      showStacks: parsed.showStacks !== false,
+      viewWindows: readWindows(parsed.viewWindows),
+      viewCategories: readViewCategories(parsed.viewCategories),
+      viewCategoryOrders: readCategoryOrders(parsed.viewCategoryOrders),
       chartHeight: readOptionalRange(parsed.chartHeight, CHART_HEIGHT_MIN, CHART_HEIGHT_MAX),
       axisFontSize: readOptionalRange(parsed.axisFontSize, AXIS_FONT_MIN, AXIS_FONT_MAX),
     };
@@ -162,6 +182,8 @@ function autoAxisFont(height: number): number {
 
 type ChartHover = { view: number; index: number; kind: 'tasks' | 'categories'; categoryId: string };
 
+const REST_COLOR = '#c4b49a';
+
 export function SessionsChart({
   sessions,
   categories,
@@ -169,6 +191,7 @@ export function SessionsChart({
   chartDefaults,
   rememberLast,
   weekStartsOn,
+  showRest = true,
 }: {
   sessions: ChartSession[];
   categories: ChartCategory[];
@@ -176,18 +199,21 @@ export function SessionsChart({
   chartDefaults: ChartDefaults;
   rememberLast: boolean;
   weekStartsOn: WeekStartsOn;
+  showRest?: boolean;
 }) {
   const [prefs, setPrefs] = useState<ChartPrefs>(readPrefs);
   const [barsOverride, setBarsOverride] = useState<number | null>(null);
   const [hover, setHover] = useState<ChartHover | null>(null);
   const [panMs, setPanMs] = useState(0);
   const [yMaxOverride, setYMaxOverride] = useState<number | null>(null);
-  const [dropHint, setDropHint] = useState<{ view: number; index: number } | null>(null);
+  const [categoryMenu, setCategoryMenu] = useState<number | null>(null);
+  const [categoryDrop, setCategoryDrop] = useState<{ view: number; id: string; place: 'before' | 'after' } | null>(null);
   const [chartWidth, setChartWidth] = useState(CHART_W);
   const [rowWidth, setRowWidth] = useState(CHART_W);
   const chartBoxRef = useRef<HTMLDivElement | null>(null);
   const chartRowRef = useRef<HTMLDivElement | null>(null);
-  const dragId = useRef('');
+  const categoryMenuRef = useRef<HTMLDivElement | null>(null);
+  const categoryDrag = useRef('');
 
   useEffect(() => {
     try {
@@ -196,6 +222,17 @@ export function SessionsChart({
       /* private mode — prefs just won't persist */
     }
   }, [prefs]);
+
+  useEffect(() => {
+    if (categoryMenu === null) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && categoryMenuRef.current?.contains(target)) return;
+      setCategoryMenu(null);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [categoryMenu]);
 
   const muted = useMemo(() => themeColor('--muted-foreground', '#6b7280'), []);
   const grid = useMemo(() => themeColor('--border', '#e5e0d5'), []);
@@ -248,6 +285,11 @@ export function SessionsChart({
   const def = chartDefaults[prefs.preset] ?? fallbackDef;
   const defaulted = resolveDefaultBars(def.mode, def.bars, spanFloat, maxBars);
   const bars = barsOverride ?? rememberedValid ?? defaulted;
+  const maxViews = categoryIds.length === 0 ? 1 : Math.max(2, categoryIds.length);
+  const viewCount = Math.min(maxViews, Math.max(1, Math.floor(prefs.viewCount) || 1));
+  const comparing = !range.error && viewCount > 1;
+  const parentStart = range.error ? '' : toDayKey(new Date(range.startMs));
+  const parentEnd = range.error ? '' : toDayKey(new Date(range.endMs - 1));
 
   const data = useMemo(
     () =>
@@ -258,16 +300,17 @@ export function SessionsChart({
         prefs.customStart,
         prefs.customEnd,
         Date.now(),
-        pan === 0 ? null : { startMs: viewStart, endMs: viewEnd },
+        comparing || pan === 0 ? null : { startMs: viewStart, endMs: viewEnd },
         weekStartsOn,
       ),
-    [sessions, prefs.preset, bars, prefs.customStart, prefs.customEnd, pan, viewStart, viewEnd, weekStartsOn],
+    [sessions, prefs.preset, bars, prefs.customStart, prefs.customEnd, comparing, pan, viewStart, viewEnd, weekStartsOn],
   );
 
   const resetAxes = () => {
     setPanMs(0);
     setYMaxOverride(null);
     setHover(null);
+    setPrefs((prev) => ({ ...prev, viewWindows: [] }));
   };
 
   const choosePreset = (preset: ChartPreset) => {
@@ -288,47 +331,119 @@ export function SessionsChart({
     if (rememberLast) setPrefs((prev) => ({ ...prev, lastBars: { ...prev.lastBars, [prev.preset]: v } }));
   };
 
-  const maxViews = Math.max(1, categoryIds.length);
-  const viewStacks = useMemo(
-    () => syncCategoryViews(prefs.viewStacks, categoryIds, Math.min(maxViews, prefs.viewCount), prefs.viewsArranged),
-    [prefs.viewStacks, prefs.viewCount, prefs.viewsArranged, categoryIds, maxViews],
+  const viewCategoryLists = useMemo(
+    () => Array.from({ length: viewCount }, (_, index) => orderCategories(prefs.viewCategoryOrders[index], categoryIds)),
+    [viewCount, prefs.viewCategoryOrders, categoryIds],
   );
-  const setViews = (value: number) => {
+  const viewOrders = useMemo(
+    () => viewCategoryLists.map((list, index) => {
+      const selected = comparing ? clampViewCategories(prefs.viewCategories[index] ?? null, categoryIds) : categoryIds;
+      const selectedSet = new Set(selected);
+      return list.filter((id) => selectedSet.has(id));
+    }),
+    [viewCategoryLists, comparing, prefs.viewCategories, categoryIds],
+  );
+  const viewWindows = useMemo(
+    () => viewOrders.map((_, index) => {
+      const stored = prefs.viewWindows[index];
+      return clampChartWindow(stored?.start ?? '', stored?.end ?? '', parentStart, parentEnd);
+    }),
+    [viewOrders, prefs.viewWindows, parentStart, parentEnd],
+  );
+  const viewCharts = useMemo(() => {
+    if (!comparing) return [data];
+    return viewWindows.map((window) => {
+      const startMs = new Date(`${window.start}T00:00:00`).getTime();
+      const endMs = new Date(`${window.end}T00:00:00`).getTime() + DAY_MS;
+      return buildChartData(sessions, 'custom', bars, window.start, window.end, Date.now(), { startMs, endMs }, weekStartsOn, true);
+    });
+  }, [comparing, data, viewWindows, sessions, bars, weekStartsOn]);
+  const setViewWindow = (index: number, field: 'start' | 'end', value: string) => {
+    setHover(null);
     setPrefs((prev) => {
-      const current = syncCategoryViews(prev.viewStacks, categoryIds, Math.min(maxViews, prev.viewCount), prev.viewsArranged);
-      const changed = changeCategoryViews(current, value, categoryIds, prev.viewsArranged);
-      return { ...prev, viewCount: changed.stacks.length, viewStacks: changed.stacks, viewsArranged: changed.arranged };
+      const windows = viewOrders.map((_, item) => {
+        const stored = prev.viewWindows[item];
+        return clampChartWindow(stored?.start ?? '', stored?.end ?? '', parentStart, parentEnd);
+      });
+      const current = windows[index] ?? { start: parentStart, end: parentEnd };
+      windows[index] = clampChartWindow(field === 'start' ? value : current.start, field === 'end' ? value : current.end, parentStart, parentEnd, field);
+      return { ...prev, viewWindows: windows };
+    });
+  };
+  const resetViewWindow = (index: number) => {
+    setHover(null);
+    setPrefs((prev) => {
+      const windows = prev.viewWindows.slice();
+      while (windows.length <= index) windows.push({ start: parentStart, end: parentEnd });
+      windows[index] = { start: parentStart, end: parentEnd };
+      return { ...prev, viewWindows: windows };
+    });
+  };
+  const setViews = (value: number) => {
+    const next = Math.min(maxViews, Math.max(1, Math.floor(value) || 1));
+    setCategoryMenu(null);
+    setPrefs((prev) => {
+      const viewWindows = Array.from({ length: next }, (_, index) => {
+        const stored = prev.viewWindows[index];
+        if (!parentStart || !parentEnd) return stored ?? { start: parentStart, end: parentEnd };
+        return clampChartWindow(stored?.start ?? '', stored?.end ?? '', parentStart, parentEnd);
+      });
+      const viewCategories = Array.from({ length: next }, (_, index) => prev.viewCategories[index] ?? null);
+      const viewCategoryOrders = Array.from({ length: next }, (_, index) => orderCategories(prev.viewCategoryOrders[index], categoryIds));
+      return { ...prev, viewCount: next, viewWindows, viewCategories, viewCategoryOrders };
     });
     setHover(null);
   };
-  const placeCategory = (categoryId: string, toView: number, toIndex: number) => {
+  const categorySummary = (selected: string[]): string => {
+    if (selected.length === categoryIds.length) return 'Any category';
+    if (selected.length === 0) return 'No categories';
+    if (selected.length === 1) return selected[0] ? nameOf(selected[0]) : 'No category';
+    return `${selected.length} categories`;
+  };
+  const setViewCategories = (index: number, next: string[] | null) => {
+    setHover(null);
     setPrefs((prev) => {
-      const current = syncCategoryViews(prev.viewStacks, categoryIds, Math.min(maxViews, prev.viewCount), prev.viewsArranged);
-      return {
-        ...prev,
-        viewsArranged: true,
-        viewCount: current.length,
-        viewStacks: moveCategoryInViews(current, categoryId, toView, toIndex),
-      };
+      const viewCategories = Array.from({ length: viewCount }, (_, item) => prev.viewCategories[item] ?? null);
+      viewCategories[index] = next;
+      return { ...prev, viewCategories };
     });
-    setDropHint(null);
-    dragId.current = '';
+  };
+  const toggleViewCategory = (index: number, id: string) => {
+    const current = new Set(viewOrders[index] ?? []);
+    if (current.has(id)) current.delete(id);
+    else current.add(id);
+    const next = (viewCategoryLists[index] ?? categoryIds).filter((item) => current.has(item));
+    setViewCategories(index, next.length === categoryIds.length ? null : next);
+  };
+  const reorderViewCategory = (index: number, movingId: string, targetId: string, place: 'before' | 'after') => {
+    if (!movingId || movingId === targetId) return;
+    setPrefs((prev) => {
+      const viewCategoryOrders = Array.from({ length: viewCount }, (_, item) => orderCategories(prev.viewCategoryOrders[item], categoryIds));
+      viewCategoryOrders[index] = moveCategory(viewCategoryOrders[index] ?? categoryIds, movingId, targetId, place);
+      return { ...prev, viewCategoryOrders };
+    });
   };
 
   const buckets = data.buckets;
+  const restInView = (bucket: ChartBucket, order: string[]): number => {
+    if (!showRest) return 0;
+    const ids = new Set(order);
+    return bucket.restByCategory.reduce((sum, seg) => (ids.has(seg.categoryId) ? sum + seg.seconds : sum), 0);
+  };
   const secondsInView = (bucket: ChartBucket, order: string[]): number => {
     const ids = new Set(order);
-    return bucket.byCategory.reduce((sum, seg) => (ids.has(seg.categoryId) ? sum + seg.seconds : sum), 0);
+    const focus = bucket.byCategory.reduce((sum, seg) => (ids.has(seg.categoryId) ? sum + seg.seconds : sum), 0);
+    return focus + restInView(bucket, order);
   };
-  const maxTotal = viewStacks.reduce(
-    (max, order) => buckets.reduce((inner, bucket) => Math.max(inner, secondsInView(bucket, order)), max),
+  const maxTotal = viewCharts.reduce(
+    (max, chart, chartIndex) => (chart.buckets ?? []).reduce((inner, bucket) => Math.max(inner, secondsInView(bucket, viewOrders[chartIndex] ?? [])), max),
     0,
   );
   const scaled = yAxisScale(maxTotal, yMaxOverride, prefs.yInterval);
   const ticks = scaled.ticks;
   const top = scaled.top;
-  const axesMoved = pan !== 0 || yMaxOverride != null;
-  const showStacks = prefs.showStacks;
+  const windowsMoved = comparing && viewWindows.some((window) => window.start !== parentStart || window.end !== parentEnd);
+  const axesMoved = pan !== 0 || yMaxOverride != null || windowsMoved;
   const chartHeight = prefs.chartHeight ?? autoChartHeight(rowWidth);
   const axisFontSize = prefs.axisFontSize ?? autoAxisFont(chartHeight);
   const marginLeft = Math.max(40, Math.round(axisFontSize * 4.4));
@@ -337,12 +452,17 @@ export function SessionsChart({
   const plotW = Math.max(40, chartWidth - marginLeft - marginRight);
   const xChoices = xLabelChoices(viewStart, viewEnd);
   const xSelected = xChoices.find((choice) => choice.id === prefs.xInterval) ?? xChoices[0];
-  const manualLabels = xSelected.unit ? xAxisLabels(data.startMs, data.endMs, xSelected.unit, xSelected.step, weekStartsOn) : null;
-  const labelEvery = Math.max(1, Math.ceil(buckets.length / 12));
-  const axisLabels =
-    manualLabels ??
-    buckets.filter((_, index) => index % labelEvery === 0).map((bucket) => ({ atMs: bucket.startMs, text: bucket.label }));
-  const rotateXLabels = axisLabels.length * axisFontSize * 4.2 > plotW;
+  const chartLabels = (chart: ChartData) => {
+    const choices = xLabelChoices(chart.startMs, chart.endMs);
+    const selected = choices.find((choice) => choice.id === prefs.xInterval) ?? choices[0];
+    const manual = selected.unit ? xAxisLabels(chart.startMs, chart.endMs, selected.unit, selected.step, weekStartsOn) : null;
+    const every = Math.max(1, Math.ceil(chart.buckets.length / 12));
+    const labels = manual ?? chart.buckets.filter((_, index) => index % every === 0).map((bucket) => ({ atMs: bucket.startMs, text: bucket.label }));
+    return { labels, rotate: labels.length * axisFontSize * 4.2 > plotW };
+  };
+  const labelLayouts = viewCharts.map(chartLabels);
+  const axisLabels = labelLayouts[0]?.labels ?? [];
+  const rotateXLabels = labelLayouts.some((layout) => layout.rotate);
   const desiredBottom = rotateXLabels ? Math.max(48, Math.round(axisFontSize * 5)) : Math.max(24, Math.round(axisFontSize + 18));
   const xAxisBottom = Math.min(desiredBottom, Math.max(18, chartHeight - marginTop - 40));
   const plotH = Math.max(24, chartHeight - marginTop - xAxisBottom);
@@ -368,7 +488,7 @@ export function SessionsChart({
     if (chartNode) observer.observe(chartNode);
     if (rowNode) observer.observe(rowNode);
     return () => observer.disconnect();
-  }, [viewStacks.length, showStacks, data.error]);
+  }, [viewCount, data.error]);
 
   const svgUnit = (axis: 'x' | 'y', svg: SVGSVGElement | null): number => {
     const rect = svg?.getBoundingClientRect();
@@ -396,7 +516,7 @@ export function SessionsChart({
   };
 
   const startXDrag = (event: ReactPointerEvent) => {
-    if (range.error) return;
+    if (range.error || comparing) return;
     event.preventDefault();
     const originX = event.clientX;
     const originPan = pan;
@@ -416,32 +536,48 @@ export function SessionsChart({
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   };
+  const startViewDrag = (viewIndex: number, event: ReactPointerEvent) => {
+    if (!comparing || range.error) return;
+    event.preventDefault();
+    const chart = viewCharts[viewIndex];
+    if (!chart) return;
+    const originX = event.clientX;
+    const originStart = chart.startMs;
+    const span = chart.endMs - chart.startMs;
+    const svg = event.currentTarget instanceof SVGElement ? event.currentTarget.ownerSVGElement : null;
+    const scale = svgUnit('x', svg);
+    const move = (ev: PointerEvent) => {
+      const dx = (ev.clientX - originX) / scale;
+      let start = originStart - (dx / plotW) * span;
+      let end = start + span;
+      if (start < range.startMs) {
+        end += range.startMs - start;
+        start = range.startMs;
+      }
+      if (end > range.endMs) {
+        start -= end - range.endMs;
+        end = range.endMs;
+      }
+      if (start < range.startMs) start = range.startMs;
+      const next = { start: toDayKey(new Date(start)), end: toDayKey(new Date(end - 1)) };
+      setPrefs((prev) => {
+        const windows = prev.viewWindows.slice();
+        while (windows.length <= viewIndex) windows.push({ start: parentStart, end: parentEnd });
+        if (windows[viewIndex]?.start === next.start && windows[viewIndex]?.end === next.end) return prev;
+        windows[viewIndex] = next;
+        return { ...prev, viewWindows: windows };
+      });
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
   const y = (v: number): number => margin.top + plotH - (v / top) * plotH;
-  const spanMs = Math.max(1, data.endMs - data.startMs);
-  const xAt = (ms: number): number => margin.left + ((ms - data.startMs) / spanMs) * plotW;
   const bestUnit = bucketUnit((data.endMs - data.startMs) / Math.max(1, bars));
   const bestUnitLabel = bestUnit[0].toUpperCase() + bestUnit.slice(1);
-
-  const categoryTotals = useMemo(() => {
-    const totals = new Map<string, number>();
-    for (const bucket of buckets) for (const seg of bucket.byCategory) totals.set(seg.categoryId, (totals.get(seg.categoryId) ?? 0) + seg.seconds);
-    return totals;
-  }, [buckets]);
-
-  const hoverBucket = hover && hover.index >= 0 && hover.index < buckets.length ? buckets[hover.index] : null;
-  const hoverOrder = hover ? viewStacks[hover.view] ?? [] : [];
-  const hoverLeftPct = hoverBucket
-    ? Math.min(82, Math.max(18, (((xAt(hoverBucket.startMs) + xAt(hoverBucket.endMs)) / 2 / chartWidth) * 100)))
-    : 0;
-  const hoverCategory = hover?.kind === 'tasks' && hoverBucket ? hoverBucket.byCategory.find((seg) => seg.categoryId === hover.categoryId) : null;
-  const hoverTasks = hover?.kind === 'tasks' && hoverBucket ? hoverBucket.byTask.filter((task) => task.categoryId === hover.categoryId) : [];
-  const hoverOverview = hoverBucket ? hoverOrder.flatMap((id) => {
-    const seg = hoverBucket.byCategory.find((item) => item.categoryId === id);
-    return seg && seg.seconds > 0 ? [seg] : [];
-  }) : [];
-  const hoverViewSeconds = hoverOverview.reduce((sum, seg) => sum + seg.seconds, 0);
-  const headingSlots = Math.max(1, ...viewStacks.map((stack) => stack.length));
-
   return (
     <div>
       <div className="toolbar" style={{ marginBottom: 4 }}>
@@ -492,14 +628,14 @@ export function SessionsChart({
           min={1}
           max={maxViews}
           step={1}
-          value={Math.min(maxViews, viewStacks.length)}
+          value={viewCount}
           onChange={(e) => setViews(Number(e.target.value))}
           aria-label="Number of views"
           data-testid="input-chart-views"
           style={{ gridColumn: 2, gridRow: 1, width: '100%', accentColor: primary, margin: 0 }}
         />
         <span className="badge" data-testid="chart-view-count" style={{ whiteSpace: 'nowrap', gridColumn: 3, gridRow: 1 }}>
-          {viewStacks.length} {viewStacks.length === 1 ? 'view' : 'views'}
+          {viewCount} {viewCount === 1 ? 'view' : 'views'}
         </span>
         <span className="quiet-label" style={{ whiteSpace: 'nowrap', gridColumn: 1, gridRow: 2 }}>
           Bars
@@ -668,81 +804,160 @@ export function SessionsChart({
           </div>
           )}
           <div className="chart-with-stacks">
-            <button
-              type="button"
-              className="btn btn-quiet btn-small chart-stacks-button"
-              aria-pressed={showStacks}
-              aria-expanded={showStacks}
-              onClick={() => setPrefs((prev) => ({ ...prev, showStacks: !prev.showStacks }))}
-              data-testid="button-chart-stacks"
-            >
-              {showStacks ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
-              {showStacks ? 'Hide stacks' : 'Show stacks'}
-            </button>
           <div ref={chartRowRef} className="chart-views" data-testid="chart-views">
-            {viewStacks.map((order, viewIndex) => (
+            {viewOrders.map((order, viewIndex) => {
+            const chart = viewCharts[viewIndex] ?? data;
+            const buckets = chart.buckets;
+            const spanMs = Math.max(1, chart.endMs - chart.startMs);
+            const xAt = (ms: number): number => margin.left + ((ms - chart.startMs) / spanMs) * plotW;
+            const layout = labelLayouts[viewIndex] ?? { labels: [] as { atMs: number; text: string }[], rotate: false };
+            const axisLabels = layout.labels;
+            const rotateXLabels = layout.rotate;
+            const hoverBucket = hover && hover.view === viewIndex && hover.index >= 0 && hover.index < buckets.length ? buckets[hover.index] : null;
+            const hoverLeftPct = hoverBucket ? Math.min(82, Math.max(18, (((xAt(hoverBucket.startMs) + xAt(hoverBucket.endMs)) / 2 / chartWidth) * 100))) : 0;
+            const hoverCategory = hover?.kind === 'tasks' && hoverBucket ? hoverBucket.byCategory.find((seg) => seg.categoryId === hover.categoryId) : null;
+            const hoverTasks = hover?.kind === 'tasks' && hoverBucket ? hoverBucket.byTask.filter((task) => task.categoryId === hover.categoryId) : [];
+            const hoverOverview = hoverBucket ? order.flatMap((id) => {
+              const seg = hoverBucket.byCategory.find((item) => item.categoryId === id);
+              return seg && seg.seconds > 0 ? [seg] : [];
+            }) : [];
+            const hoverRest = hoverBucket ? restInView(hoverBucket, order) : 0;
+            const hoverViewSeconds = hoverOverview.reduce((sum, seg) => sum + seg.seconds, 0) + hoverRest;
+            const dragX = comparing ? (event: ReactPointerEvent) => startViewDrag(viewIndex, event) : startXDrag;
+            const resetX = comparing ? () => resetViewWindow(viewIndex) : () => setPanMs(0);
+            const viewWindow = viewWindows[viewIndex] ?? { start: parentStart, end: parentEnd };
+            const allSelected = order.length === categoryIds.length;
+            return (
             <section
               key={viewIndex}
               className="chart-view"
               data-testid="chart-view"
-              onDragOver={(event) => {
-                if (dragId.current) event.preventDefault();
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                const moving = dragId.current;
-                if (!moving) return;
-                placeCategory(moving, viewIndex, categoryDropIndex(order, null, moving, 'after'));
-              }}
             >
-            {showStacks && (
-            <div className="chart-view-heading" style={{ minHeight: headingSlots * 32 }} data-testid="chart-view-heading">
-              {order.length === 0 && <div className="chart-view-empty">Drop a category here</div>}
-              {order.map((id) => (
+            {categoryIds.length > 0 && (
+              <div className="category-filter chart-view-categories" ref={categoryMenu === viewIndex ? categoryMenuRef : undefined}>
                 <button
-                  key={id || 'none'}
                   type="button"
-                  draggable
-                  className={dropHint?.view === viewIndex && order[dropHint.index] === id ? 'chart-view-chip is-drop' : 'chart-view-chip'}
-                  data-testid="chart-view-category"
-                  data-category={id || 'none'}
-                  title={`${nameOf(id)} · ${formatDurationShort(categoryTotals.get(id) ?? 0)}. Drag to change this stack.`}
-                  onDragStart={(event) => {
-                    dragId.current = id;
-                    event.dataTransfer.setData('text/plain', id || 'uncategorized');
-                    event.dataTransfer.effectAllowed = 'move';
-                  }}
-                  onDragEnd={() => {
-                    dragId.current = '';
-                    setDropHint(null);
-                  }}
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setDropHint({ view: viewIndex, index: order.indexOf(id) });
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    const moving = dragId.current;
-                    if (!moving) return;
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    const place = event.clientY > rect.top + rect.height / 2 ? 'after' : 'before';
-                    placeCategory(moving, viewIndex, categoryDropIndex(order, id, moving, place));
-                  }}
+                  className="select category-filter-button"
+                  aria-haspopup="true"
+                  aria-expanded={categoryMenu === viewIndex}
+                  aria-label={comparing ? `View ${viewIndex + 1} categories` : 'Reorder categories'}
+                  onClick={() => setCategoryMenu((current) => (current === viewIndex ? null : viewIndex))}
+                  data-testid={`button-chart-view-categories-${viewIndex}`}
                 >
-                  <span className="dot" style={{ '--cat-color': colorOf(id), width: 8, height: 8 } as React.CSSProperties} />
-                  <span>{nameOf(id)}</span>
+                  {comparing ? categorySummary(order) : 'Category order'}
                 </button>
-              ))}
-            </div>
+                {categoryMenu === viewIndex && (
+                  <div className="category-filter-menu" role="group" aria-label={comparing ? `View ${viewIndex + 1} categories` : 'Category order'}>
+                    {comparing && (
+                    <label className="category-filter-option">
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        ref={(el) => {
+                          if (el) el.indeterminate = !allSelected && order.length > 0;
+                        }}
+                        onChange={() => setViewCategories(viewIndex, allSelected ? [] : null)}
+                        data-testid={`checkbox-chart-view-category-any-${viewIndex}`}
+                      />
+                      <span>Any category</span>
+                    </label>
+                    )}
+                    {(viewCategoryLists[viewIndex] ?? categoryIds).map((id) => {
+                      const dropping = categoryDrop?.view === viewIndex && categoryDrop.id === id;
+                      return (
+                      <label
+                        key={id || 'none'}
+                        className={dropping ? `category-filter-option is-drop-${categoryDrop.place}` : 'category-filter-option'}
+                        onDragOver={(event) => {
+                          if (!categoryDrag.current) return;
+                          event.preventDefault();
+                          const rect = event.currentTarget.getBoundingClientRect();
+                          const place = event.clientY > rect.top + rect.height / 2 ? 'after' : 'before';
+                          setCategoryDrop((current) => (current?.view === viewIndex && current.id === id && current.place === place ? current : { view: viewIndex, id, place }));
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          const rect = event.currentTarget.getBoundingClientRect();
+                          const place = event.clientY > rect.top + rect.height / 2 ? 'after' : 'before';
+                          reorderViewCategory(viewIndex, categoryDrag.current, id, place);
+                          categoryDrag.current = '';
+                          setCategoryDrop(null);
+                        }}
+                      >
+                        <span
+                          className="chart-category-grip"
+                          draggable
+                          aria-label={`Drag ${id ? nameOf(id) : 'No category'}`}
+                          title="Drag up or down. The top category is drawn on top of the bar."
+                          data-testid={`drag-chart-view-category-${viewIndex}-${id || 'none'}`}
+                          onDragStart={(event) => {
+                            categoryDrag.current = id;
+                            event.dataTransfer.setData('text/plain', id || 'uncategorized');
+                            event.dataTransfer.effectAllowed = 'move';
+                          }}
+                          onDragEnd={() => {
+                            categoryDrag.current = '';
+                            setCategoryDrop(null);
+                          }}
+                        />
+                        {comparing && (
+                        <input
+                          type="checkbox"
+                          checked={order.includes(id)}
+                          onChange={() => toggleViewCategory(viewIndex, id)}
+                          data-testid={`checkbox-chart-view-category-${viewIndex}-${id || 'none'}`}
+                        />
+                        )}
+                        {id ? <span className="dot" style={{ '--cat-color': colorOf(id) } as React.CSSProperties} /> : null}
+                        <span>{id ? nameOf(id) : 'No category'}</span>
+                      </label>
+                      );
+                    })}
+                    {comparing && (
+                    <div className="category-filter-footer">
+                      <button type="button" className="btn btn-quiet btn-small" onClick={() => setViewCategories(viewIndex, [])} data-testid={`button-chart-view-categories-clear-${viewIndex}`}>
+                        Clear all
+                      </button>
+                    </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            {comparing && (
+              <div className="chart-view-range">
+                <label className="field-label" htmlFor={`chart-view-start-${viewIndex}`}>From</label>
+                <input
+                  id={`chart-view-start-${viewIndex}`}
+                  className="input"
+                  type="date"
+                  min={parentStart}
+                  max={parentEnd}
+                  value={viewWindow.start}
+                  aria-label={`View ${viewIndex + 1} start date`}
+                  data-testid={`input-chart-view-start-${viewIndex}`}
+                  onChange={(event) => setViewWindow(viewIndex, 'start', event.target.value)}
+                />
+                <label className="field-label" htmlFor={`chart-view-end-${viewIndex}`}>To</label>
+                <input
+                  id={`chart-view-end-${viewIndex}`}
+                  className="input"
+                  type="date"
+                  min={parentStart}
+                  max={parentEnd}
+                  value={viewWindow.end}
+                  aria-label={`View ${viewIndex + 1} end date`}
+                  data-testid={`input-chart-view-end-${viewIndex}`}
+                  onChange={(event) => setViewWindow(viewIndex, 'end', event.target.value)}
+                />
+              </div>
             )}
             <div ref={viewIndex === 0 ? chartBoxRef : undefined} style={{ position: 'relative', height: svgHeight }}>
             <svg
               viewBox={`0 0 ${chartWidth} ${svgHeight}`}
               style={{ width: '100%', height: svgHeight, display: 'block', touchAction: 'none' }}
               role="img"
-              aria-label={`Focus time chart for ${order.map((id) => nameOf(id)).join(', ') || 'no categories'}: ${data.rangeLabel}`}
+              aria-label={`Focus time chart for ${order.map((id) => (id ? nameOf(id) : 'No category')).join(', ') || 'no categories'}: ${chart.rangeLabel}`}
               data-testid="sessions-chart"
               onMouseLeave={() => setHover(null)}
             >
@@ -769,6 +984,7 @@ export function SessionsChart({
                 const barW = Math.max(0.5, xAt(b.endMs) - x);
                 let acc = 0;
                 const viewTotal = secondsInView(b, order);
+                const restSeconds = restInView(b, order);
                 const aboveH = Math.max(0, y(viewTotal) - margin.top);
                 const dimmed = hover !== null && hover.view === viewIndex && hover.index !== i;
                 return (
@@ -806,6 +1022,20 @@ export function SessionsChart({
                         />
                       );
                     })}
+                    {restSeconds > 0 && (
+                      <rect
+                        x={x}
+                        y={y(acc + restSeconds)}
+                        width={barW}
+                        height={Math.max((restSeconds / top) * plotH, 2.5)}
+                        fill={REST_COLOR}
+                        style={{ cursor: 'pointer' }}
+                        data-testid="chart-bar-rest"
+                        onMouseEnter={() => setHover({ view: viewIndex, index: i, kind: 'categories', categoryId: '' })}
+                      >
+                        <title>{`Rest ${formatDurationShort(restSeconds)}`}</title>
+                      </rect>
+                    )}
                   </g>
                 );
               })}
@@ -876,10 +1106,10 @@ export function SessionsChart({
                 role="slider"
                 aria-label="Time axis"
                 data-testid="chart-axis-x"
-                onPointerDown={startXDrag}
-                onDoubleClick={() => setPanMs(0)}
+                onPointerDown={dragX}
+                onDoubleClick={resetX}
               >
-                <title>Drag to move the time window. Double-click to reset.</title>
+                <title>{comparing ? 'Drag to move this view inside the selected range. Double-click to use the full range.' : 'Drag to move the time window. Double-click to reset.'}</title>
               </rect>
               {buckets.map((b, i) => (
                 <rect
@@ -893,8 +1123,8 @@ export function SessionsChart({
                   style={{ cursor: range.error ? 'default' : 'ew-resize' }}
                   data-testid="chart-bar-below"
                   onMouseEnter={() => setHover({ view: viewIndex, index: i, kind: 'categories', categoryId: '' })}
-                  onPointerDown={startXDrag}
-                  onDoubleClick={() => setPanMs(0)}
+                  onPointerDown={dragX}
+                  onDoubleClick={resetX}
                 />
               ))}
             </svg>
@@ -947,13 +1177,21 @@ export function SessionsChart({
                         <span>{formatDurationShort(seg.seconds)}</span>
                       </div>
                     ))}
+                    {hoverRest > 0 && (
+                      <div data-testid="chart-tooltip-rest" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span className="dot" style={{ '--cat-color': REST_COLOR, width: 8, height: 8 } as React.CSSProperties} />
+                        <span style={{ flex: 1 }}>Rest</span>
+                        <span>{formatDurationShort(hoverRest)}</span>
+                      </div>
+                    )}
                   </>
                 )}
               </div>
             )}
             </div>
             </section>
-            ))}
+            );
+            })}
           </div>
           </div>
           <div

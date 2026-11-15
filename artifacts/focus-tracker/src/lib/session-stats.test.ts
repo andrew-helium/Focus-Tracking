@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildChartData,
+  clampChartWindow,
+  clampViewCategories,
+  moveCategory,
+  orderCategories,
   resolveDefaultBars,
   unitBarsForSpan,
   fillBuckets,
@@ -12,6 +16,8 @@ import {
   yAxisScale,
   resolveRange,
   sliceBuckets,
+  sliceDayBuckets,
+  toDayKey,
   sliderNotches,
   spanDays,
   xAxisLabels,
@@ -152,6 +158,18 @@ test('sessions of the same task combine inside a bar', () => {
   );
 });
 
+test('rest follows the session and stays out of the focus total', () => {
+  const shells = sliceBuckets(new Date(2026, 9, 22).getTime(), new Date(2026, 9, 23).getTime(), 24);
+  const buckets = fillBuckets(shells, [
+    sess({ startedAt: '2026-10-22T10:40:00', endedAt: '2026-10-22T11:10:00', durationSeconds: 1800, restSeconds: 20 * 60 }),
+  ]);
+  assert.equal(buckets[10].totalSeconds, 20 * 60);
+  assert.equal(buckets[10].restByCategory.length, 0);
+  assert.equal(buckets[11].totalSeconds, 10 * 60);
+  assert.equal(buckets[11].sessions, 1);
+  assert.equal(buckets[11].restByCategory[0]?.seconds, 20 * 60);
+});
+
 test('bad sessions are skipped', () => {
   const shells = sliceBuckets(new Date(2026, 10, 1).getTime(), new Date(2026, 10, 3).getTime(), 2);
   const buckets = fillBuckets(shells, [
@@ -181,6 +199,63 @@ test('axis interval sets the grid step and a drag sets the top', () => {
   assert.deepEqual(yAxisScale(5000, null, 1800), { top: 5400, ticks: [0, 1800, 3600, 5400] });
   assert.deepEqual(yAxisScale(10000, 3600, 1800), { top: 3600, ticks: [0, 1800, 3600] });
   assert.deepEqual(ticksUpTo(0, 3600), [0]);
+});
+
+test('one bar per day is a single calendar day across the daylight-saving change', () => {
+  const now = new Date(2026, 10, 15, 12).getTime();
+  const data = buildChartData(
+    [
+      sess({ startedAt: '2026-11-01T01:30:00', endedAt: '2026-11-01T02:30:00', durationSeconds: 3600 }),
+      sess({ startedAt: '2026-11-02T00:20:00', endedAt: '2026-11-02T00:50:00', durationSeconds: 1800 }),
+    ],
+    'month',
+    30,
+    '',
+    '',
+    now,
+  );
+  assert.equal(data.buckets.length, 30);
+  for (const bucket of data.buckets) {
+    assert.equal(bucket.fullLabel.includes('–'), false, bucket.fullLabel);
+    assert.equal(toDayKey(new Date(bucket.startMs)), toDayKey(new Date(bucket.endMs - 1)));
+  }
+  assert.equal(data.buckets[0].label, 'Oct 17');
+  assert.equal(data.buckets.at(-1)?.label, 'Nov 15');
+  const novemberFirst = data.buckets.find((bucket) => bucket.label === 'Nov 1');
+  const novemberSecond = data.buckets.find((bucket) => bucket.label === 'Nov 2');
+  assert.equal(novemberFirst?.totalSeconds, 3600);
+  assert.equal(novemberSecond?.totalSeconds, 1800);
+  assert.equal(sliceDayBuckets(data.startMs, data.endMs).length, 30);
+});
+
+test('a comparison window stays inside the parent range and keeps the shared bar count', () => {
+  assert.deepEqual(clampChartWindow('2026-10-01', '2026-10-20', '2026-10-17', '2026-11-15'), { start: '2026-10-17', end: '2026-10-20' });
+  assert.deepEqual(clampChartWindow('2026-11-10', '2026-11-02', '2026-10-17', '2026-11-15', 'start'), { start: '2026-11-10', end: '2026-11-10' });
+  assert.deepEqual(clampChartWindow('2026-11-10', '2026-11-02', '2026-10-17', '2026-11-15', 'end'), { start: '2026-11-02', end: '2026-11-02' });
+  const data = buildChartData([], 'custom', 30, '2026-11-01', '2026-11-07', new Date(2026, 10, 15, 12).getTime(), {
+    startMs: new Date(2026, 10, 1).getTime(),
+    endMs: new Date(2026, 10, 8).getTime(),
+  }, 0, true);
+  assert.equal(data.bars, 30);
+  assert.equal(data.buckets.length, 30);
+  assert.ok(data.buckets[0].startMs >= new Date(2026, 10, 1).getTime());
+  assert.ok(data.buckets.at(-1)!.endMs <= new Date(2026, 10, 8).getTime());
+});
+
+test('a view category filter stays inside the categories selected for the page', () => {
+  const allowed = ['reading', 'writing', ''];
+  assert.deepEqual(clampViewCategories(null, allowed), allowed);
+  assert.deepEqual(clampViewCategories(['reading', 'errands'], allowed), ['reading']);
+  assert.deepEqual(clampViewCategories(['errands'], allowed), allowed);
+  assert.deepEqual(clampViewCategories([], allowed), []);
+});
+
+test('dragging a category changes the stack order and stays inside the page selection', () => {
+  const allowed = ['errands', 'learning', 'reading'];
+  assert.deepEqual(orderCategories(undefined, allowed), allowed);
+  assert.deepEqual(orderCategories(['reading', 'missing', 'errands'], allowed), ['reading', 'errands', 'learning']);
+  assert.deepEqual(moveCategory(['errands', 'learning', 'reading'], 'reading', 'errands', 'before'), ['reading', 'errands', 'learning']);
+  assert.deepEqual(moveCategory(['reading', 'errands', 'learning'], 'reading', 'learning', 'after'), ['errands', 'learning', 'reading']);
 });
 
 test('bar count is clamped instead of breaking', () => {

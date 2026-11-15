@@ -9,6 +9,7 @@ export type ChartSession = {
   startedAt: string;
   endedAt: string;
   durationSeconds: number;
+  restSeconds?: number;
   categoryId: string;
   taskId?: string;
   taskTitle?: string;
@@ -35,6 +36,7 @@ export type ChartBucket = BucketShell & {
   totalSeconds: number;
   sessions: number;
   byCategory: { categoryId: string; seconds: number }[];
+  restByCategory: { categoryId: string; seconds: number }[];
   byTask: ChartTaskTime[];
 };
 
@@ -126,6 +128,14 @@ export function alignWeekRange(
 export function isWeekGranularity(startMs: number, endMs: number, bars: number): boolean {
   const slice = (endMs - startMs) / Math.max(1, Math.floor(bars) || 1);
   return bucketUnit(slice) === 'week';
+}
+
+/** A midnight-aligned window with about one bar per day. Daylight saving can make the average slice a little off 24 hours. */
+function isOneBarPerDay(startMs: number, endMs: number, bars: number): boolean {
+  const n = Math.max(1, Math.floor(bars) || 1);
+  const slice = (endMs - startMs) / n;
+  if (slice < 20 * HOUR_MS || slice >= 28 * HOUR_MS) return false;
+  return startOfDay(new Date(startMs)).getTime() === startMs;
 }
 
 export function spanDays(startMs: number, endMs: number): number {
@@ -329,6 +339,30 @@ export function sliceBuckets(startMs: number, endMs: number, count: number): Buc
   return out;
 }
 
+/** One bar per local calendar day. A daylight-saving day keeps its 23 or 25 hours instead of spilling into the next date. */
+export function sliceDayBuckets(startMs: number, endMs: number): BucketShell[] {
+  const out: BucketShell[] = [];
+  let day = startOfDay(new Date(startMs));
+  let i = 0;
+  while (day.getTime() < endMs && i < 800) {
+    const next = addDays(day, 1).getTime();
+    const s = Math.max(day.getTime(), startMs);
+    const e = Math.min(next, endMs);
+    if (e > s) {
+      out.push({
+        key: `day-${i}`,
+        label: dayShort(day),
+        fullLabel: day.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }),
+        startMs: s,
+        endMs: e,
+      });
+    }
+    day = addDays(day, 1);
+    i += 1;
+  }
+  return out;
+}
+
 /** One bar per calendar week. The last bar stops at endMs, so the current week can be short. */
 export function sliceWeekBuckets(startMs: number, endMs: number, weekStartsOn: WeekStartsOn): BucketShell[] {
   const out: BucketShell[] = [];
@@ -386,7 +420,7 @@ function taskKey(session: ChartSession, categoryId: string): { key: string; titl
 }
 
 export function fillBuckets(shells: BucketShell[], sessions: ChartSession[]): ChartBucket[] {
-  const buckets: ChartBucket[] = shells.map((s) => ({ ...s, totalSeconds: 0, sessions: 0, byCategory: [], byTask: [] }));
+  const buckets: ChartBucket[] = shells.map((s) => ({ ...s, totalSeconds: 0, sessions: 0, byCategory: [], restByCategory: [], byTask: [] }));
   for (const session of sessions) {
     const span = sessionSpan(session);
     if (!span) continue;
@@ -418,9 +452,29 @@ export function fillBuckets(shells: BucketShell[], sessions: ChartSession[]): Ch
         }
       } else bucket.byTask.push({ key: task.key, title: task.title, categoryId: catId, seconds });
     });
+    const restTotal = Math.max(0, Math.floor(Number(session.restSeconds) || 0));
+    if (restTotal > 0) {
+      const restStart = span.end;
+      const restEnd = restStart + restTotal * 1000;
+      const restHits: { index: number; overlap: number }[] = [];
+      for (let i = 0; i < buckets.length; i += 1) {
+        const overlap = Math.min(restEnd, buckets[i].endMs) - Math.max(restStart, buckets[i].startMs);
+        if (overlap > 0) restHits.push({ index: i, overlap });
+      }
+      const restShares = allocateSeconds(restHits.map((hit) => hit.overlap));
+      restHits.forEach((hit, i) => {
+        const seconds = restShares[i];
+        if (seconds <= 0) return;
+        const bucket = buckets[hit.index];
+        const existing = bucket.restByCategory.find((item) => item.categoryId === catId);
+        if (existing) existing.seconds += seconds;
+        else bucket.restByCategory.push({ categoryId: catId, seconds });
+      });
+    }
   }
   for (const bucket of buckets) {
     bucket.byCategory.sort((a, b) => b.seconds - a.seconds);
+    bucket.restByCategory.sort((a, b) => b.seconds - a.seconds);
     bucket.byTask.sort((a, b) => b.seconds - a.seconds);
   }
   return buckets;
@@ -525,6 +579,65 @@ function formatRangeDay(d: Date, withYear: boolean): string {  return d.toLocale
   );
 }
 
+/** Keep a chosen start and end inside an inclusive parent range. An inverted pair collapses onto the date that was just edited. */
+export function clampChartWindow(
+  start: string,
+  end: string,
+  parentStart: string,
+  parentEnd: string,
+  edited?: 'start' | 'end',
+): { start: string; end: string } {
+  const dayOk = (day: string) => /^\d{4}-\d{2}-\d{2}$/.test(day);
+  let nextStart = dayOk(start) ? start : parentStart;
+  let nextEnd = dayOk(end) ? end : parentEnd;
+  if (nextStart < parentStart) nextStart = parentStart;
+  if (nextStart > parentEnd) nextStart = parentEnd;
+  if (nextEnd > parentEnd) nextEnd = parentEnd;
+  if (nextEnd < parentStart) nextEnd = parentStart;
+  if (nextStart > nextEnd) {
+    if (edited === 'end') nextStart = nextEnd;
+    else nextEnd = nextStart;
+  }
+  return { start: nextStart, end: nextEnd };
+}
+
+/** Keep a view's categories inside the categories selected for the page. Null means every allowed category. A selection whose categories were all removed returns to that full set. */
+export function clampViewCategories(selected: string[] | null, allowed: string[]): string[] {
+  if (selected === null) return [...allowed];
+  const allowedSet = new Set(allowed);
+  const kept = selected.filter((id) => allowedSet.has(id));
+  if (selected.length > 0 && kept.length === 0) return [...allowed];
+  return kept;
+}
+
+/** List the allowed categories in the saved order. Categories without a saved place follow in their original order. */
+export function orderCategories(order: string[] | undefined, allowed: string[]): string[] {
+  const allowedSet = new Set(allowed);
+  const next: string[] = [];
+  const seen = new Set<string>();
+  for (const id of order ?? []) {
+    if (!allowedSet.has(id) || seen.has(id)) continue;
+    next.push(id);
+    seen.add(id);
+  }
+  for (const id of allowed) {
+    if (seen.has(id)) continue;
+    next.push(id);
+  }
+  return next;
+}
+
+/** Move one category before or after another. The first category in the list is drawn on top of the bar. */
+export function moveCategory(order: string[], movingId: string, targetId: string, place: 'before' | 'after'): string[] {
+  if (movingId === targetId) return [...order];
+  const without = order.filter((id) => id !== movingId);
+  const index = without.indexOf(targetId);
+  if (index < 0) return [...order];
+  const next = without.slice();
+  next.splice(place === 'after' ? index + 1 : index, 0, movingId);
+  return next;
+}
+
 export function buildChartData(
   sessions: ChartSession[],
   preset: ChartPreset,
@@ -534,24 +647,27 @@ export function buildChartData(
   nowMs = Date.now(),
   windowMs?: { startMs: number; endMs: number } | null,
   weekStartsOn: WeekStartsOn = 0,
+  exactBars = false,
 ): ChartData {
   const base = resolveRange(preset, customStart, customEnd, nowMs);
   let range = base;
   if (!base.error && windowMs && windowMs.endMs - windowMs.startMs >= 60_000 && windowMs.endMs - windowMs.startMs <= MAX_CUSTOM_DAYS * DAY_MS) {
     range = { startMs: windowMs.startMs, endMs: windowMs.endMs };
   }
-  const weekly = !range.error && preset !== 'today' && preset !== 'week' && isWeekGranularity(range.startMs, range.endMs, bars);
+  const weekly = !exactBars && !range.error && preset !== 'today' && preset !== 'week' && isWeekGranularity(range.startMs, range.endMs, bars);
   if (weekly) {
     const aligned = alignWeekRange(range.startMs, range.endMs, weekStartsOn, nowMs);
     range = { startMs: aligned.startMs, endMs: aligned.endMs };
   }
   const span = spanDays(range.startMs, range.endMs);
   const max = maxBarsForSpan(range.startMs, range.endMs);
-  const effective = Math.min(max, Math.max(1, Math.floor(bars) || 1));
-  const buckets = fillBuckets(
-    weekly ? sliceWeekBuckets(range.startMs, range.endMs, weekStartsOn) : sliceBuckets(range.startMs, range.endMs, effective),
-    sessions,
-  );
+  const effective = exactBars ? Math.max(1, Math.floor(bars) || 1) : Math.min(max, Math.max(1, Math.floor(bars) || 1));
+  const shells = weekly
+    ? sliceWeekBuckets(range.startMs, range.endMs, weekStartsOn)
+    : isOneBarPerDay(range.startMs, range.endMs, effective)
+      ? sliceDayBuckets(range.startMs, range.endMs)
+      : sliceBuckets(range.startMs, range.endMs, effective);
+  const buckets = fillBuckets(shells, sessions);
   let totalSeconds = 0;
   let activeBuckets = 0;
   let best: ChartBucket | null = null;

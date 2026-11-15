@@ -64,19 +64,37 @@ test('dragging up increases each task passed, and dragging down decreases them',
   assert.equal(downward.find(task => task.id === 'hidden')?.priority, 2);
 });
 
-test('upcoming All lists priority 1 projects, then priority 1 assignments, then the next number', () => {
+test('numbers errands apart from assignments and projects', () => {
+  const tasks = normalizePriorities([
+    item('assignment-a', 'short', { priority: 1 }),
+    item('assignment-b', 'short', { priority: 12 }),
+    item('project', 'long', { priority: 4 }),
+    item('errand-a', 'short', { categoryId: 'cat-errands', priority: 1 }),
+    item('errand-b', 'long', { categoryId: 'cat-errands', priority: 2 }),
+    item('errand-new', 'short', { categoryId: 'cat-errands' }),
+  ]);
+
+  assert.equal(tasks.find(task => task.id === 'assignment-a')?.priority, 1);
+  assert.equal(tasks.find(task => task.id === 'assignment-b')?.priority, 2);
+  assert.equal(tasks.find(task => task.id === 'project')?.priority, 1);
+  assert.equal(tasks.find(task => task.id === 'errand-a')?.priority, 1);
+  assert.equal(tasks.find(task => task.id === 'errand-b')?.priority, 2);
+  assert.equal(tasks.find(task => task.id === 'errand-new')?.priority, 3);
+});
+
+test('upcoming Errands lists only errands, in priority order', () => {
   const tasks = [
     item('assignment-2', 'short', { priority: 2, startDate: '2026-10-01' }),
     item('project-1-later', 'long', { priority: 1, startDate: '2026-10-20' }),
     item('assignment-1', 'short', { priority: 1, startDate: '2026-10-01' }),
+    item('errand-later', 'short', { categoryId: 'cat-errands', priority: 1, startDate: '2026-10-20' }),
+    item('errand-sooner', 'long', { categoryId: 'cat-errands', priority: 1, startDate: '2026-10-02' }),
+    item('errand-2', 'short', { categoryId: 'cat-errands', priority: 2, startDate: '2026-10-01' }),
     item('project-1-sooner', 'long', { priority: 1, startDate: '2026-10-02' }),
     item('project-2', 'long', { priority: 2, startDate: '2026-10-01' }),
   ];
 
-  assert.deepEqual(
-    sortUpcoming(tasks, 'all').map(task => task.id),
-    ['project-1-sooner', 'project-1-later', 'assignment-1', 'project-2', 'assignment-2'],
-  );
+  assert.deepEqual(sortUpcoming(tasks, 'errand').map(task => task.id), ['errand-sooner', 'errand-later', 'errand-2']);
   assert.deepEqual(sortUpcoming(tasks, 'project').map(task => task.id), ['project-1-sooner', 'project-1-later', 'project-2']);
   assert.deepEqual(sortUpcoming(tasks, 'assignment').map(task => task.id), ['assignment-1', 'assignment-2']);
 });

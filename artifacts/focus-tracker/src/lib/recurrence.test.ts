@@ -4,6 +4,7 @@ import {
   isRecurringTaskFinished,
   isTaskActive,
   isTaskDue,
+  isTaskReminded,
   isTaskWaitingToRecur,
   nextDateAfterCompletion,
   nextScheduledDate,
@@ -18,6 +19,9 @@ const task = (overrides: Partial<RecurringTask> = {}): RecurringTask => ({
   completed: false,
   weeklyDays: [1, 3],
   monthlyDays: [1],
+  intervalDays: 1,
+  remindBefore: false,
+  remindDays: 1,
   ...overrides,
 });
 
@@ -66,4 +70,46 @@ test('the end date is inclusive and prevents future recurrences', () => {
 
   assert.equal(nextDateAfterCompletion(value, '2026-10-12'), undefined);
   assert.equal(isRecurringTaskFinished(value), true);
+});
+
+test('a custom interval repeats every chosen number of days from the start date', () => {
+  const value = task({
+    recurrence: 'interval',
+    intervalDays: 10,
+    startDate: '2026-10-01',
+    endDate: '',
+    lastCompletedDate: '2026-10-01',
+  });
+
+  assert.equal(nextDateAfterCompletion(value, '2026-10-01'), '2026-10-11');
+  assert.equal(nextScheduledDate(value, '2026-10-12'), '2026-10-21');
+});
+
+test('a yearly interval stays within the one-year search', () => {
+  const value = task({
+    recurrence: 'interval',
+    intervalDays: 365,
+    startDate: '2026-01-01',
+    endDate: '',
+  });
+
+  assert.equal(nextScheduledDate(value, '2026-01-02'), '2027-01-01');
+});
+
+test('a reminder reopens a completed task before its next date', () => {
+  const value = task({
+    recurrence: 'interval',
+    intervalDays: 10,
+    startDate: '2026-10-01',
+    endDate: '',
+    lastCompletedDate: '2026-10-01',
+    remindBefore: true,
+    remindDays: 3,
+  });
+
+  assert.equal(isTaskReminded(value, '2026-10-07'), false);
+  assert.equal(isTaskWaitingToRecur(value, '2026-10-07'), true);
+  assert.equal(isTaskReminded(value, '2026-10-08'), true);
+  assert.equal(isTaskActive(value, '2026-10-08'), true);
+  assert.equal(isTaskWaitingToRecur(value, '2026-10-08'), false);
 });

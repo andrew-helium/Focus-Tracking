@@ -22,6 +22,9 @@ export type SyncStore = {
     completed: boolean;
     weeklyDays: number[];
     monthlyDays: number[];
+    intervalDays?: number;
+    remindBefore?: boolean;
+    remindDays?: number;
     lastCompletedDate?: string;
   }[];
   sessions: {
@@ -123,7 +126,7 @@ export function storeToRows(store: SyncStore): Record<(typeof TABS)[number], str
       ...store.categories.map((c) => [c.id, c.name, c.color]),
     ],
     Tasks: [
-      ['id', 'title', 'description', 'categoryId', 'categoryName', 'engagement', 'length', 'priority', 'createdAt', 'startDate', 'endDate', 'recurring', 'recurrence', 'completed', 'weeklyDays', 'monthlyDays', 'lastCompletedDate'],
+      ['id', 'title', 'description', 'categoryId', 'categoryName', 'engagement', 'length', 'priority', 'createdAt', 'startDate', 'endDate', 'recurring', 'recurrence', 'completed', 'weeklyDays', 'monthlyDays', 'lastCompletedDate', 'intervalDays', 'remindBefore', 'remindDays'],
       ...store.tasks.map((t) => [
         t.id,
         t.title,
@@ -142,6 +145,9 @@ export function storeToRows(store: SyncStore): Record<(typeof TABS)[number], str
         (t.weeklyDays ?? []).join(','),
         (t.monthlyDays ?? []).join(','),
         t.lastCompletedDate ?? '',
+        String(t.intervalDays ?? ''),
+        boolCell(Boolean(t.remindBefore)),
+        String(t.remindDays ?? ''),
       ]),
     ],
     Sessions: [

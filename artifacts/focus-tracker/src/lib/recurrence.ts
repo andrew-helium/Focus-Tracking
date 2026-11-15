@@ -1,4 +1,4 @@
-export type Recurrence = 'daily' | 'weekdays' | 'weekly' | 'monthly';
+export type Recurrence = 'daily' | 'weekdays' | 'weekly' | 'monthly' | 'interval';
 
 export type RecurringTask = {
   recurring: boolean;
@@ -8,6 +8,9 @@ export type RecurringTask = {
   completed: boolean;
   weeklyDays: number[];
   monthlyDays: number[];
+  intervalDays: number;
+  remindBefore: boolean;
+  remindDays: number;
   lastCompletedDate?: string;
 };
 
@@ -35,6 +38,18 @@ export function addDays(date: string, amount: number): string {
   return localDateKey(value);
 }
 
+export function clampDayCount(value: unknown, fallback = 1): number {
+  const days = Math.floor(Number(value));
+  if (!Number.isFinite(days)) return fallback;
+  return Math.min(365, Math.max(1, days));
+}
+
+function daysBetween(start: string, date: string): number {
+  const from = new Date(`${start}T12:00:00`).getTime();
+  const to = new Date(`${date}T12:00:00`).getTime();
+  return Math.round((to - from) / 86400000);
+}
+
 export function isScheduledOn(task: RecurringTask, date: string): boolean {
   if (!task.recurring || (task.startDate && date < task.startDate) || (task.endDate && date > task.endDate)) {
     return false;
@@ -50,6 +65,11 @@ export function isScheduledOn(task: RecurringTask, date: string): boolean {
       return task.weeklyDays.includes(day);
     case 'monthly':
       return task.monthlyDays.includes(Number(date.slice(-2)));
+    case 'interval': {
+      if (!task.startDate) return false;
+      const span = daysBetween(task.startDate, date);
+      return span >= 0 && span % clampDayCount(task.intervalDays) === 0;
+    }
   }
 }
 
@@ -57,7 +77,7 @@ export function nextScheduledDate(task: RecurringTask, fromDate: string): string
   if (!task.recurring) return undefined;
   let candidate = task.startDate && task.startDate > fromDate ? task.startDate : fromDate;
 
-  // Every supported cadence has another occurrence within 31 days if one is selected.
+  // The longest custom interval is one year, so the next date is within 365 days.
   for (let offset = 0; offset <= 370; offset += 1) {
     if (task.endDate && candidate > task.endDate) return undefined;
     if (isScheduledOn(task, candidate)) return candidate;
@@ -79,9 +99,19 @@ export function nextDateAfterCompletion(task: RecurringTask, completedDate: stri
   return nextScheduledDate(task, firstPossibleDate);
 }
 
+export function isTaskReminded(task: RecurringTask, currentDate = today()): boolean {
+  if (!task.recurring || !task.remindBefore || task.completed) return false;
+  const nextDate = task.lastCompletedDate
+    ? nextDateAfterCompletion(task, task.lastCompletedDate)
+    : nextScheduledDate(task, task.startDate || currentDate);
+  if (!nextDate || nextDate <= currentDate) return false;
+  return currentDate >= addDays(nextDate, -clampDayCount(task.remindDays));
+}
+
 export function isTaskActive(task: RecurringTask, currentDate = today()): boolean {
   if (task.completed) return false;
   if (!task.recurring || !task.lastCompletedDate) return true;
+  if (isTaskReminded(task, currentDate)) return true;
 
   const nextDate = nextDateAfterCompletion(task, task.lastCompletedDate);
   return Boolean(nextDate && nextDate <= currentDate);

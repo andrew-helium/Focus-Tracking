@@ -2,14 +2,23 @@ import type { AssignmentSort } from './assignment-sorting.ts';
 
 export type TaskLength = 'short' | 'long';
 export type DropPlace = 'before' | 'after';
+export type PrioritySection = 'project' | 'assignment' | 'errand';
+
+export const ERRANDS_CATEGORY_ID = 'cat-errands';
 
 export type RankedTask = {
   id: string;
   length: TaskLength;
+  categoryId?: string;
   priority?: number;
   startDate: string;
   endDate: string;
 };
+
+export function prioritySection(task: { length: TaskLength; categoryId?: string }): PrioritySection {
+  if (task.categoryId === ERRANDS_CATEGORY_ID) return 'errand';
+  return task.length === 'long' ? 'project' : 'assignment';
+}
 
 export function hasPriority(priority: number | undefined): priority is number {
   return typeof priority === 'number' && Number.isInteger(priority);
@@ -22,8 +31,8 @@ function clampPriority(priority: number, count: number): number {
 
 export function normalizePriorities<T extends RankedTask>(tasks: readonly T[]): T[] {
   const next = tasks.map(task => ({ ...task }));
-  for (const length of ['long', 'short'] as const) {
-    const group = next.filter(task => task.length === length);
+  for (const section of ['project', 'assignment', 'errand'] as const) {
+    const group = next.filter(task => prioritySection(task) === section);
     const count = group.length;
     for (const task of group) {
       if (hasPriority(task.priority)) task.priority = clampPriority(task.priority, count);
@@ -45,7 +54,7 @@ export function moveToPriority<T extends RankedTask>(tasks: readonly T[], id: st
   const normalized = normalizePriorities(tasks);
   const current = normalized.find(task => task.id === id);
   if (!current || !Number.isInteger(nextPriority)) return normalized;
-  const count = normalized.filter(task => task.length === current.length).length;
+  const count = normalized.filter(task => prioritySection(task) === prioritySection(current)).length;
   const priority = clampPriority(nextPriority, count);
   return normalized.map(task => task.id === id ? { ...task, priority } : task);
 }
@@ -62,9 +71,10 @@ export function dropBeside<T extends RankedTask>(
   const normalized = normalizePriorities(tasks);
   const source = normalized.find(task => task.id === fromId);
   const target = normalized.find(task => task.id === toId);
-  if (!source || !target || source.length !== target.length || !hasPriority(target.priority)) return normalized;
+  if (!source || !target || prioritySection(source) !== prioritySection(target) || !hasPriority(target.priority)) return normalized;
+  const section = prioritySection(source);
   const visible = sortByPriorityThenDate(
-    normalized.filter(task => task.length === source.length && visibleIds.includes(task.id)),
+    normalized.filter(task => prioritySection(task) === section && visibleIds.includes(task.id)),
     sortBy,
   );
   const fromIndex = visible.findIndex(task => task.id === fromId);
@@ -73,7 +83,7 @@ export function dropBeside<T extends RankedTask>(
   const destination = place === 'before' ? targetIndex : targetIndex + 1;
   const movingUp = destination < fromIndex;
   const passed = movingUp ? visible.slice(destination, fromIndex) : visible.slice(fromIndex + 1, destination);
-  const count = normalized.filter(task => task.length === source.length).length;
+  const count = normalized.filter(task => prioritySection(task) === section).length;
   const updates = new Map<string, number>();
   for (const task of passed) {
     updates.set(task.id, clampPriority((task.priority ?? 1) + (movingUp ? 1 : -1), count));
@@ -89,14 +99,13 @@ function compareDates(a: string, b: string): number {
   return a.localeCompare(b);
 }
 
-export type UpcomingGroup = 'all' | 'project' | 'assignment';
+export type UpcomingGroup = PrioritySection;
 
 export function sortUpcoming<T extends RankedTask>(tasks: readonly T[], group: UpcomingGroup): T[] {
-  const filtered = tasks.filter(task => group === 'all' || (group === 'project' ? task.length === 'long' : task.length === 'short'));
+  const filtered = tasks.filter(task => prioritySection(task) === group);
   return [...filtered].sort((a, b) => {
     const priorityDelta = (a.priority ?? 0) - (b.priority ?? 0);
     if (priorityDelta !== 0) return priorityDelta;
-    if (group === 'all' && a.length !== b.length) return a.length === 'long' ? -1 : 1;
     const byDate = compareDates(a.startDate, b.startDate);
     if (byDate !== 0) return byDate;
     return a.id.localeCompare(b.id);
