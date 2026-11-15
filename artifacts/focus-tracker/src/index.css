@@ -58,3 +58,25 @@
 .chart-view-empty { border:1px dashed hsl(var(--border)); border-radius:8px; color:hsl(var(--muted-foreground)); font-size:11px; padding:8px; text-align:center; }
 .upcoming-filter { margin:0 0 12px; }
 .task-description { white-space:pre-wrap; }
+.input,.textarea,input:not(.clock) { caret-color:auto; }
+.input,.textarea { cursor:text; }
+.rest-show-control { display:inline-flex;align-items:center;gap:8px; }
+.rest-show-control input[type=range] { width:88px;margin:0;accent-color:hsl(var(--primary)); }
+.personal-notes { margin-bottom:18px; }
+.personal-notes-toolbar { display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px; }
+.personal-notes-toolbar .is-on { background:color-mix(in srgb,hsl(var(--primary)) 12%,hsl(var(--card)));color:hsl(var(--primary));border-color:hsl(var(--primary)); }
+.personal-notes-body { min-height:120px;border:1px solid hsl(var(--border));border-radius:12px;padding:12px 14px;background:hsl(var(--background));color:hsl(var(--foreground));line-height:1.55;outline:none; }
+.personal-notes-body:focus { border-color:hsl(var(--primary));box-shadow:0 0 0 3px rgba(48,102,83,.10); }
+.personal-notes-body.is-editing,.personal-notes-body.is-editing :where(h2,h3,p,span,div,li) { caret-color:auto;cursor:text; }
+.personal-notes-body:not(.is-editing),.personal-notes-body:not(.is-editing) :where(h2,h3,p,span,div,li) { caret-color:transparent;cursor:default; }
+.personal-notes-body p,.personal-notes-body div { margin:0.35em 0; }
+.personal-notes-body ul,.personal-notes-body ol { margin:0.35em 0;padding:0 0 0 1.75em; }
+.personal-notes-body ul { list-style:disc outside; }
+.personal-notes-body ul ul { list-style-type:circle; }
+.personal-notes-body ol { list-style:decimal outside; }
+.personal-notes-body ol[type='a'] { list-style-type:lower-alpha; }
+.personal-notes-body ol[type='A'] { list-style-type:upper-alpha; }
+.personal-notes-body li { display:list-item;margin:0.15em 0; }
+.personal-notes-body li::marker { color:hsl(var(--foreground)); }
+.personal-notes-body blockquote { margin:0.25em 0 0.25em 1.4em; }
+.personal-notes-body[data-empty='true']:not(:focus):before { content:'Jot a reminder for yourself';color:hsl(var(--muted-foreground));pointer-events:none; }

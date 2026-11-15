@@ -34,6 +34,8 @@ export type SyncStore = {
     endedAt: string;
     durationSeconds: number;
     note: string;
+    restMode?: string;
+    restSeconds?: number;
   }[];
 };
 
@@ -143,7 +145,7 @@ export function storeToRows(store: SyncStore): Record<(typeof TABS)[number], str
       ]),
     ],
     Sessions: [
-      ['id', 'categoryId', 'categoryName', 'taskId', 'taskTitle', 'mode', 'startedAt', 'endedAt', 'durationSeconds', 'note'],
+      ['id', 'categoryId', 'categoryName', 'taskId', 'taskTitle', 'mode', 'startedAt', 'endedAt', 'durationSeconds', 'note', 'restMode', 'restSeconds'],
       ...store.sessions.map((s) => [
         s.id,
         s.categoryId ?? '',
@@ -155,6 +157,8 @@ export function storeToRows(store: SyncStore): Record<(typeof TABS)[number], str
         s.endedAt,
         String(s.durationSeconds),
         s.note ?? '',
+        s.restMode ?? '',
+        String(s.restSeconds ?? 0),
       ]),
     ],
   };
