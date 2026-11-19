@@ -4,7 +4,7 @@ export const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 export const BACKUP_FILE_NAME = 'focus-tracker-backup.json';
 
 export function storeToBackupJson(store: SyncStore): string {
-  return JSON.stringify({ categories: store.categories, tasks: store.tasks, sessions: store.sessions }, null, 2);
+  return JSON.stringify({ categories: store.categories, tasks: store.tasks, sessions: store.sessions, completions: store.completions ?? [] }, null, 2);
 }
 
 export function driveFileUrl(fileId: string): string {

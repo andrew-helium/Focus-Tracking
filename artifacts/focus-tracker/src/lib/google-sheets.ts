@@ -40,6 +40,16 @@ export type SyncStore = {
     restMode?: string;
     restSeconds?: number;
   }[];
+  completions?: {
+    id: string;
+    taskId: string;
+    title: string;
+    description?: string;
+    engagement?: string;
+    categoryId: string;
+    section: 'project' | 'assignment' | 'errand';
+    completedAt: string;
+  }[];
 };
 
 const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
