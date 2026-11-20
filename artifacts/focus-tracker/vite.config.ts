@@ -15,12 +15,28 @@ if (Number.isNaN(port) || port <= 0) {
 
 const basePath = process.env.BASE_PATH ?? (process.env.NODE_ENV === 'production' ? './' : '/');
 
+// Chrome treats a crossorigin stylesheet as a CORS fetch, then refuses the
+// @font-face files because extension responses have no CORS header. The page
+// keeps its layout and falls back to the system serif and sans.
+function extensionStylesheet() {
+  return {
+    name: 'extension-stylesheet',
+    transformIndexHtml: {
+      order: 'post' as const,
+      handler(html: string) {
+        return html.replaceAll('<link rel="stylesheet" crossorigin ', '<link rel="stylesheet" ');
+      },
+    },
+  };
+}
+
 export default defineConfig({
   base: basePath,
   plugins: [
     react(),
     tailwindcss(),
     runtimeErrorOverlay(),
+    extensionStylesheet(),
     ...(process.env.NODE_ENV !== 'production' &&
     process.env.REPL_ID !== undefined
       ? [

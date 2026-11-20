@@ -16,15 +16,37 @@ export function sanitizeNotes(html: string): string {
   const holder = document.createElement('div');
   const appendClean = (parent: Node, node: Node) => {
     if (node.nodeType === Node.TEXT_NODE) {
-      parent.appendChild(document.createTextNode(node.textContent ?? ''));
+      const text = (node.textContent ?? '').replace(/\u200b/g, '');
+      if (text) parent.appendChild(document.createTextNode(text));
       return;
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return;
     const el = node as HTMLElement;
     const tag = el.tagName.toLowerCase();
     if (tag === 'script' || tag === 'style') return;
-    const styled = tag === 'span' ? wrapForStyle(el.getAttribute('style') ?? '') : '';
-    const keep = ALLOWED.has(tag) ? tag : styled;
+    if (tag === 'span' || tag === 'font') {
+      const style = el.getAttribute('style') ?? '';
+      const size = fontSizeStyle(style);
+      const styled = wrapForStyle(style);
+      if (!size && !styled) {
+        for (const child of [...el.childNodes]) appendClean(parent, child);
+        return;
+      }
+      const created: HTMLElement[] = [];
+      if (size) {
+        const span = document.createElement('span');
+        span.setAttribute('style', `font-size:${size}`);
+        created.push(span);
+      }
+      if (styled) created.push(document.createElement(styled));
+      const target = created[created.length - 1];
+      for (const child of [...el.childNodes]) appendClean(target, child);
+      if (!(target.textContent ?? '').replace(/\u00a0/g, '').trim() && !target.querySelector('br')) return;
+      for (let index = created.length - 1; index > 0; index -= 1) created[index - 1].appendChild(created[index]);
+      parent.appendChild(created[0]);
+      return;
+    }
+    const keep = ALLOWED.has(tag) ? tag : '';
     if (!keep) {
       for (const child of [...el.childNodes]) appendClean(parent, child);
       return;
@@ -184,11 +206,144 @@ const TOOLS: { command: string; label: string; icon: typeof Bold; testId: string
   { command: 'indent', label: 'Increase indent', icon: IndentIncrease, testId: 'button-notes-indent' },
 ];
 
+const NOTE_FONT_MIN = 12;
+const NOTE_FONT_MAX = 32;
+
+function clampNoteFont(px: number): number {
+  const stepped = Math.round(px / 2) * 2;
+  return Math.min(NOTE_FONT_MAX, Math.max(NOTE_FONT_MIN, Number.isFinite(stepped) ? stepped : NOTE_FONT_MIN));
+}
+
+function fontSizeStyle(style: string): string {
+  const match = /font-size:\s*(\d+(?:\.\d+)?)px/i.exec(style);
+  if (!match) return '';
+  return `${clampNoteFont(Number(match[1]))}px`;
+}
+
+function fontPx(node: Node, editor: HTMLElement): number {
+  const el = node instanceof Element ? node : node.parentElement;
+  const target = el && editor.contains(el) ? el : editor;
+  return clampNoteFont(parseFloat(getComputedStyle(target).fontSize));
+}
+
+function textsInRange(editor: HTMLElement, range: Range): Text[] {
+  const root = range.commonAncestorContainer;
+  if (root.nodeType === Node.TEXT_NODE) return editor.contains(root) ? [root as Text] : [];
+  const scope = editor.contains(root) ? root : editor;
+  const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+  const pieces: Text[] = [];
+  let node = walker.nextNode();
+  while (node) {
+    const text = node as Text;
+    if (text.data.replace(/\u200b/g, '').length) {
+      try {
+        if (range.intersectsNode(text)) pieces.push(text);
+      } catch { /* node left the document */ }
+    }
+    node = walker.nextNode();
+  }
+  return pieces;
+}
+
+function sliceToRange(text: Text, range: Range): Text | null {
+  if (text === range.startContainer && text === range.endContainer) {
+    const start = range.startOffset;
+    const end = range.endOffset;
+    if (end <= start) return null;
+    const part = start > 0 ? text.splitText(start) : text;
+    const cut = end - start;
+    if (cut < part.length) part.splitText(cut);
+    return part.length ? part : null;
+  }
+  if (text === range.startContainer) {
+    const part = range.startOffset > 0 ? text.splitText(range.startOffset) : text;
+    return part.length ? part : null;
+  }
+  if (text === range.endContainer) {
+    if (range.endOffset <= 0) return null;
+    if (range.endOffset < text.length) text.splitText(range.endOffset);
+    return text.length ? text : null;
+  }
+  return text.length ? text : null;
+}
+
+function paintSize(text: Text, px: number) {
+  const parent = text.parentElement;
+  if (parent?.tagName === 'SPAN' && parent.childNodes.length === 1 && parent.getAttribute('style')?.includes('font-size')) {
+    parent.setAttribute('style', `font-size:${px}px`);
+    return;
+  }
+  const span = document.createElement('span');
+  span.setAttribute('style', `font-size:${px}px`);
+  text.replaceWith(span);
+  span.appendChild(text);
+}
+
+function emptySizeSpan(node: Node | null, editor: HTMLElement): HTMLSpanElement | null {
+  const el = node instanceof Element ? node : node?.parentElement ?? null;
+  if (!(el instanceof HTMLSpanElement) || !editor.contains(el)) return null;
+  if (!el.getAttribute('style')?.includes('font-size')) return null;
+  if ((el.textContent ?? '').replace(/\u200b/g, '').length) return null;
+  return el;
+}
+
+function applyFontDelta(editor: HTMLElement, delta: number) {
+  editor.focus();
+  let selection = selectionIn(editor);
+  if (!selection) {
+    placeCaret(editor, true);
+    selection = selectionIn(editor);
+  }
+  if (!selection) return;
+  const range = selection.getRangeAt(0);
+  if (range.collapsed) {
+    const current = fontPx(range.startContainer, editor);
+    const next = clampNoteFont(current + delta);
+    if (next === current) return;
+    const pending = emptySizeSpan(range.startContainer, editor);
+    if (pending) {
+      pending.setAttribute('style', `font-size:${next}px`);
+      return;
+    }
+    const span = document.createElement('span');
+    span.setAttribute('style', `font-size:${next}px`);
+    span.appendChild(document.createTextNode('\u200b'));
+    range.insertNode(span);
+    const caret = document.createRange();
+    const marker = span.firstChild;
+    if (!marker) return;
+    caret.setStart(marker, marker.textContent?.length ?? 0);
+    caret.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(caret);
+    return;
+  }
+  const pieces = textsInRange(editor, range);
+  const kept: Text[] = [];
+  for (let index = pieces.length - 1; index >= 0; index -= 1) {
+    const part = sliceToRange(pieces[index], selection.getRangeAt(0));
+    if (!part || !part.data.replace(/\u200b/g, '').length) continue;
+    const next = clampNoteFont(fontPx(part, editor) + delta);
+    if (next === fontPx(part, editor)) continue;
+    paintSize(part, next);
+    kept.push(part);
+  }
+  if (!kept.length) return;
+  const start = kept[kept.length - 1];
+  const end = kept[0];
+  const nextRange = document.createRange();
+  nextRange.setStart(start, 0);
+  nextRange.setEnd(end, end.data.length);
+  selection.removeAllRanges();
+  selection.addRange(nextRange);
+}
+
 export function PersonalNotes({ html, onSave }: { html: string; onSave: (html: string) => void }) {
   const editorRef = useRef<HTMLDivElement>(null);
   const undoRef = useRef<ListUndo | null>(null);
   const [editing, setEditing] = useState(false);
   const [active, setActive] = useState<Record<string, boolean>>({});
+  const [fontBounds, setFontBounds] = useState({ atMin: false, atMax: false });
   const htmlRef = useRef(html);
   htmlRef.current = html;
 
@@ -209,6 +364,10 @@ export function PersonalNotes({ html, onSave }: { html: string; onSave: (html: s
         try { marks[tool.command] = document.queryCommandState(tool.command); } catch { marks[tool.command] = false; }
       }
       setActive(marks);
+      const selected = selectionIn(editor);
+      const sizes = !selected ? [16] : selected.isCollapsed ? [fontPx(selected.anchorNode ?? editor, editor)] : textsInRange(editor, selected.getRangeAt(0)).map(piece => fontPx(piece, editor));
+      const sample = sizes.length ? sizes : [fontPx(selected?.anchorNode ?? editor, editor)];
+      setFontBounds({ atMin: sample.every(size => size <= NOTE_FONT_MIN), atMax: sample.every(size => size >= NOTE_FONT_MAX) });
     };
     document.addEventListener('selectionchange', sync);
     return () => document.removeEventListener('selectionchange', sync);
@@ -253,6 +412,14 @@ export function PersonalNotes({ html, onSave }: { html: string; onSave: (html: s
     markDirty();
   };
 
+  const changeFont = (delta: number) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    undoRef.current = null;
+    applyFontDelta(editor, delta);
+    markDirty();
+  };
+
   const onInput = (event: React.FormEvent<HTMLDivElement>) => {
     markDirty();
     const native = event.nativeEvent as InputEvent;
@@ -284,9 +451,11 @@ export function PersonalNotes({ html, onSave }: { html: string; onSave: (html: s
     <section className="panel section-card personal-notes" aria-label="Personal notes" data-testid="personal-notes">
       <div className="section-heading">
         <h2>Personal notes</h2>
-        {editing
-          ? <button type="button" className="btn btn-small" onClick={finish} data-testid="button-save-notes">Save notes</button>
-          : <button type="button" className="btn btn-quiet btn-small" aria-label="Edit notes" onClick={() => setEditing(true)} data-testid="button-edit-notes"><Pencil size={14} /></button>}
+        <div className="personal-notes-actions">
+          {editing
+            ? <button type="button" className="btn btn-small" onClick={finish} data-testid="button-save-notes">Save notes</button>
+            : <button type="button" className="btn btn-quiet btn-small" aria-label="Edit notes" onClick={() => setEditing(true)} data-testid="button-edit-notes"><Pencil size={14} /></button>}
+        </div>
       </div>
       {editing && (
         <div className="personal-notes-toolbar" role="toolbar" aria-label="Note formatting">
@@ -304,9 +473,13 @@ export function PersonalNotes({ html, onSave }: { html: string; onSave: (html: s
                 data-testid={tool.testId}
               >
                 <Icon size={14} aria-hidden="true" />
-              </button>
-            );
+            </button>
+          );
           })}
+          <div className="personal-notes-size" role="group" aria-label="Note font size">
+            <button type="button" className="btn btn-quiet btn-small" aria-label="Decrease font size" disabled={fontBounds.atMin} onMouseDown={(event) => event.preventDefault()} onClick={() => changeFont(-2)} data-testid="button-notes-smaller">A−</button>
+            <button type="button" className="btn btn-quiet btn-small" aria-label="Increase font size" disabled={fontBounds.atMax} onMouseDown={(event) => event.preventDefault()} onClick={() => changeFont(2)} data-testid="button-notes-larger">A+</button>
+          </div>
         </div>
       )}
       <div
