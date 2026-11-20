@@ -108,14 +108,32 @@ const RECORD_LABEL: Record<(typeof TABS)[number], string> = {
   Sessions: 'Session',
 };
 
-/** One table covering categories, tasks, and sessions. Empty cells are fields that record type does not use. */
+const COMPLETION_COLUMNS = ['id', 'taskId', 'title', 'description', 'categoryId', 'categoryName', 'engagement', 'section', 'completedAt'] as const;
+
+/** One table covering categories, tasks, sessions, and completed-task records. Empty cells are fields that record type does not use. */
 export function storeToBackupCsvRows(store: SyncStore): string[][] {
   const tables = storeToRows(store);
+  const categoryName = (id: string) => store.categories.find((c) => c.id === id)?.name ?? '';
+  const completionHeader = [...COMPLETION_COLUMNS];
+  const completionRows = (store.completions ?? []).map((item) => [
+    item.id,
+    item.taskId,
+    item.title,
+    item.description ?? '',
+    item.categoryId,
+    categoryName(item.categoryId),
+    item.engagement ?? '',
+    item.section,
+    item.completedAt,
+  ]);
   const columns = ['record'];
   for (const name of TABS) {
     for (const column of tables[name][0] ?? []) {
       if (!columns.includes(column)) columns.push(column);
     }
+  }
+  for (const column of completionHeader) {
+    if (!columns.includes(column)) columns.push(column);
   }
   const rows: string[][] = [columns];
   for (const name of TABS) {
@@ -124,6 +142,10 @@ export function storeToBackupCsvRows(store: SyncStore): string[][] {
     for (const source of body) {
       rows.push(columns.map((column) => (column === 'record' ? RECORD_LABEL[name] : source[index.get(column) ?? -1] ?? '')));
     }
+  }
+  const completionIndex = new Map<string, number>(completionHeader.map((column, position) => [column, position]));
+  for (const source of completionRows) {
+    rows.push(columns.map((column) => (column === 'record' ? 'Completion' : source[completionIndex.get(column) ?? -1] ?? '')));
   }
   return rows;
 }
