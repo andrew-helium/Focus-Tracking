@@ -3,7 +3,13 @@
   "name": "Focus Tracker",
   "version": "1.0.0",
   "description": "Personal focus tracker",
-  "permissions": ["alarms", "notifications", "storage", "tabs"],
+  "permissions": [
+    "alarms",
+    "notifications",
+    "storage",
+    "tabs",
+    "identity"
+  ],
   "background": {
     "service_worker": "background.js"
   },
@@ -21,5 +27,11 @@
       "32": "icon32.png",
       "48": "icon48.png"
     }
+  },
+  "oauth2": {
+    "client_id": "661079037673-hi0c9v6lvgljeud2ucj2ciachf9s492c.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/drive.file"
+    ]
   }
 }

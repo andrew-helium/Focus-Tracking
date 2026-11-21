@@ -48,6 +48,7 @@ type ChartPrefs = {
 };
 
 const DAY_MS = 86400000;
+const MAX_CHART_VIEWS = 5;
 const PAN_PAST_MS = 5 * 365 * DAY_MS;
 
 function knownYInterval(value: unknown): number | null {
@@ -130,7 +131,7 @@ function readPrefs(): ChartPrefs {
     } else if (typeof parsed.bars === 'number' && parsed.bars >= 1) {
       lastBars[preset] = Math.floor(parsed.bars);
     }
-    const viewCount = typeof parsed.viewCount === 'number' && parsed.viewCount >= 1 ? Math.floor(parsed.viewCount) : 1;
+    const viewCount = typeof parsed.viewCount === 'number' && parsed.viewCount >= 1 ? Math.min(MAX_CHART_VIEWS, Math.floor(parsed.viewCount)) : 1;
     return {
       preset,
       customStart,
@@ -285,7 +286,7 @@ export function SessionsChart({
   const def = chartDefaults[prefs.preset] ?? fallbackDef;
   const defaulted = resolveDefaultBars(def.mode, def.bars, spanFloat, maxBars);
   const bars = barsOverride ?? rememberedValid ?? defaulted;
-  const maxViews = categoryIds.length === 0 ? 1 : Math.max(2, categoryIds.length);
+  const maxViews = categoryIds.length === 0 ? 1 : Math.min(MAX_CHART_VIEWS, Math.max(2, categoryIds.length));
   const viewCount = Math.min(maxViews, Math.max(1, Math.floor(prefs.viewCount) || 1));
   const comparing = !range.error && viewCount > 1;
   const parentStart = range.error ? '' : toDayKey(new Date(range.startMs));
