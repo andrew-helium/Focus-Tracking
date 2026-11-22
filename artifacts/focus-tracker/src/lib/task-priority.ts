@@ -1,5 +1,6 @@
-import type { AssignmentSort } from './assignment-sorting.ts';
 import { isTaskActive, today, type Recurrence, type RecurringTask } from './recurrence.ts';
+
+export type AssignmentSort = 'start' | 'end';
 
 export type TaskLength = 'short' | 'long';
 export type DropPlace = 'before' | 'after';

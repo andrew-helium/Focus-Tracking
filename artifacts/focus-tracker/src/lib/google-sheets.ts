@@ -1,9 +1,3 @@
-export type GoogleSyncSettings = {
-  clientId: string;
-  sheetId: string;
-  autoSync: boolean;
-};
-
 export type SyncStore = {
   categories: { id: string; name: string; color: string }[];
   tasks: {
@@ -52,7 +46,6 @@ export type SyncStore = {
   }[];
 };
 
-const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 const TABS = ['Categories', 'Tasks', 'Sessions'] as const;
 
 declare global {
@@ -89,13 +82,6 @@ export function loadGis(): Promise<void> {
     document.head.appendChild(script);
   });
   return gisPromise;
-}
-
-export function extractSheetId(input: string): string {
-  const trimmed = input.trim();
-  if (!trimmed) return '';
-  const match = trimmed.match(/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  return match ? match[1] : trimmed;
 }
 
 function boolCell(value: boolean): string {
@@ -150,7 +136,7 @@ export function storeToBackupCsvRows(store: SyncStore): string[][] {
   return rows;
 }
 
-export function storeToRows(store: SyncStore): Record<(typeof TABS)[number], string[][]> {
+function storeToRows(store: SyncStore): Record<(typeof TABS)[number], string[][]> {
   const categoryName = (id: string) => store.categories.find((c) => c.id === id)?.name ?? '';
   return {
     Categories: [
@@ -200,55 +186,4 @@ export function storeToRows(store: SyncStore): Record<(typeof TABS)[number], str
       ]),
     ],
   };
-}
-
-async function sheetsFetch(token: string, path: string, init?: RequestInit): Promise<unknown> {
-  const response = await fetch(`https://sheets.googleapis.com/v4${path}`, {
-    ...init,
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const message = (data as { error?: { message?: string } })?.error?.message || `Google Sheets error (${response.status})`;
-    throw new Error(message);
-  }
-  return data;
-}
-
-export async function createSpreadsheet(token: string, title = 'Focus Tracker'): Promise<{ id: string; url: string }> {
-  const data = (await sheetsFetch(token, '/spreadsheets', {
-    method: 'POST',
-    body: JSON.stringify({ properties: { title }, sheets: TABS.map((name) => ({ properties: { title: name } })) }),
-  })) as { spreadsheetId?: string; spreadsheetUrl?: string };
-  if (!data.spreadsheetId) throw new Error('Google did not return a spreadsheet id');
-  return { id: data.spreadsheetId, url: data.spreadsheetUrl ?? `https://docs.google.com/spreadsheets/d/${data.spreadsheetId}` };
-}
-
-async function ensureTabs(token: string, sheetId: string): Promise<void> {
-  const meta = (await sheetsFetch(token, `/spreadsheets/${sheetId}?fields=sheets.properties.title`)) as {
-    sheets?: { properties?: { title?: string } }[];
-  };
-  const existing = new Set((meta.sheets ?? []).map((s) => s.properties?.title).filter(Boolean) as string[]);
-  const missing = TABS.filter((name) => !existing.has(name));
-  if (!missing.length) return;
-  await sheetsFetch(token, `/spreadsheets/${sheetId}:batchUpdate`, {
-    method: 'POST',
-    body: JSON.stringify({ requests: missing.map((title) => ({ addSheet: { properties: { title } } })) }),
-  });
-}
-
-export async function pushStore(token: string, sheetId: string, store: SyncStore): Promise<void> {
-  await ensureTabs(token, sheetId);
-  const rows = storeToRows(store);
-  await sheetsFetch(token, `/spreadsheets/${sheetId}/values:batchClear`, {
-    method: 'POST',
-    body: JSON.stringify({ ranges: TABS.map((name) => `${name}!A1:Z`) }),
-  });
-  await sheetsFetch(token, `/spreadsheets/${sheetId}/values:batchUpdate`, {
-    method: 'POST',
-    body: JSON.stringify({
-      valueInputOption: 'RAW',
-      data: TABS.map((name) => ({ range: `${name}!A1`, values: rows[name] })),
-    }),
-  });
 }
