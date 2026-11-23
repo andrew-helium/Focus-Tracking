@@ -67,6 +67,8 @@ declare global {
 let gisPromise: Promise<void> | null = null;
 export function loadGis(): Promise<void> {
   if (typeof window === 'undefined') return Promise.reject(new Error('No window'));
+  const extensionId = (globalThis as { chrome?: { runtime?: { id?: string } } }).chrome?.runtime?.id;
+  if (extensionId) return Promise.reject(new Error('This extension cannot load Google sign-in from accounts.google.com. Add the Chrome extension client ID, then press Backup now again.'));
   if (window.google?.accounts?.oauth2) return Promise.resolve();
   if (gisPromise) return gisPromise;
   gisPromise = new Promise((resolve, reject) => {
